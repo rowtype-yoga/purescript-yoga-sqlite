@@ -275,7 +275,7 @@ instance RenderConstraint a => RenderConstraint (PrimaryKey a) where
   renderConstraint _ = joinConstraints "PRIMARY KEY" (renderConstraint (Proxy :: Proxy a))
 
 else instance RenderConstraint a => RenderConstraint (AutoIncrement a) where
-  renderConstraint _ = joinConstraints "AUTOINCREMENT" (renderConstraint (Proxy :: Proxy a))
+  renderConstraint _ = joinConstraints (renderConstraint (Proxy :: Proxy a)) "AUTOINCREMENT"
 
 else instance RenderConstraint a => RenderConstraint (Unique a) where
   renderConstraint _ = joinConstraints "UNIQUE" (renderConstraint (Proxy :: Proxy a))
@@ -306,6 +306,31 @@ joinConstraints a b = case a, b of
   s1, s2 -> s1 <> " " <> s2
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- HasAutoIncrementCheck: detect AUTOINCREMENT through wrappers
+-- SQLite requires INTEGER PRIMARY KEY AUTOINCREMENT without NOT NULL
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class HasAutoIncrementCheck a where
+  hasAutoIncrement :: Proxy a -> Boolean
+
+instance HasAutoIncrementCheck (AutoIncrement a) where
+  hasAutoIncrement _ = true
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (PrimaryKey a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (Unique a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (Default v a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (DefaultExpr e a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (ForeignKey t r c a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (Nullable a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a where
+  hasAutoIncrement _ = false
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- DDL generation
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -324,6 +349,7 @@ instance
   , ExtractType entry typ
   , SQLiteTypeName typ
   , IsNullable typ
+  , HasAutoIncrementCheck entry
   , RenderConstraint entry
   , RenderColumnsRL tail
   ) =>
@@ -332,7 +358,8 @@ instance
     let colName = reflectSymbol (Proxy :: Proxy name)
     let colType = sqliteTypeName (Proxy :: Proxy typ)
     let nullable = isNullable (Proxy :: Proxy typ)
-    let notNull = if nullable then "" else " NOT NULL"
+    let isAutoInc = hasAutoIncrement (Proxy :: Proxy entry)
+    let notNull = if nullable || isAutoInc then "" else " NOT NULL"
     let constraints = renderConstraint (Proxy :: Proxy entry)
     let constraintsSuffix = if constraints == "" then "" else " " <> constraints
     [ colName <> " " <> colType <> notNull <> constraintsSuffix ] <> renderColumnsRL (Proxy :: Proxy tail)
