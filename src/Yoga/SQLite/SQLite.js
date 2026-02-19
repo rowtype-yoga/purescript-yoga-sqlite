@@ -103,3 +103,7 @@ export const pingImpl = async (client) => {
 
 // Convert DateTime (JSDate) to ISO string for SQLite TEXT storage
 export const dateTimeToStringImpl = (jsDate) => jsDate.toISOString();
+
+// F32 vector <-> Array conversion for Turso vector columns
+export const f32VectorFromArrayImpl = (arr) => new Float32Array(arr).buffer;
+export const f32VectorToArrayImpl = (buf) => Array.from(new Float32Array(buf));

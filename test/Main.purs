@@ -7,6 +7,7 @@ import Data.DateTime (DateTime(..))
 import Data.Enum (toEnum)
 import Data.Maybe (Maybe(..), fromJust)
 import Data.Newtype (un)
+import Data.Tuple.Nested ((/\))
 import Data.Time (Time(..))
 import Effect (Effect)
 import Effect.Aff (Aff, launchAff_)
@@ -64,6 +65,34 @@ type PostsTable = Table "posts"
 
 postsTable :: Proxy PostsTable
 postsTable = Proxy
+
+type DocumentsTable = Table "documents"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , title :: String
+  , body :: String
+  , embedding :: F32Vector "3"
+  )
+
+documentsTable :: Proxy DocumentsTable
+documentsTable = Proxy
+
+type ArticlesTable = Table "articles"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , title :: String
+  , body :: String
+  )
+
+articlesTable :: Proxy ArticlesTable
+articlesTable = Proxy
+
+type VDocsTable = Table "vdocs"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , title :: String
+  , emb :: F32Vector "3"
+  )
+
+vDocsTable :: Proxy VDocsTable
+vDocsTable = Proxy
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Type annotations prove correctness at compile time
@@ -205,6 +234,49 @@ typedUnion = do
   let q2 = from usersTable # select @"name"
   union q1 q2
 
+-- F32Vector / FTS compile-time assertions
+typedDocumentsSelectAll
+  :: Q _
+       (body :: String, embedding :: F32Vector "3", id :: Int, title :: String)
+       ()
+       _
+typedDocumentsSelectAll = from documentsTable # selectAll
+
+typedMatchWhere
+  :: Q _ _ (query :: String) _
+typedMatchWhere = from articlesTable # selectAll # where_ @"body MATCH $query"
+
+typedMatchTupleWhere
+  :: Q _ _ (query :: String) _
+typedMatchTupleWhere = from articlesTable # selectAll # where_ @"(title, body) MATCH $query"
+
+typedSelectRaw
+  :: Q _ (title :: String, score :: Number) (query :: String) _
+typedSelectRaw =
+  from articlesTable
+    # selectRaw @"title, fts_score(title, body, $query) AS score" @(title :: String, score :: Number)
+    # where_ @"(title, body) MATCH $query"
+
+typedOrderByRaw
+  :: Q _ (title :: String, score :: Number) (query :: String) _
+typedOrderByRaw =
+  from articlesTable
+    # selectRaw @"title, fts_score(title, body, $query) AS score" @(title :: String, score :: Number)
+    # where_ @"(title, body) MATCH $query"
+    # orderByRaw @"score DESC"
+
+typedFromRaw
+  :: Q _ (title :: String, distance :: Number) (probe :: F32Vector "3", maxDist :: Number) _
+typedFromRaw =
+  fromRaw @"vector_top_k('idx_emb', $probe, 10) AS top JOIN docs ON docs.rowid = top.id"
+    # selectRaw @"docs.title, top.distance" @(title :: String, distance :: Number)
+    # whereRaw @"top.distance < $maxDist" @(probe :: F32Vector "3", maxDist :: Number)
+    # orderByRaw @"top.distance ASC"
+
+typedWhereRaw
+  :: Q _ _ (x :: Int) _
+typedWhereRaw = from usersTable # selectAll # whereRaw @"id IN (SELECT id FROM other)" @(x :: Int)
+
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Helper
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -307,6 +379,40 @@ spec = before setupConn do
     it "RETURNING ALL" \_ -> do
       toSQL typedReturningAll `shouldEqual` "DELETE FROM users WHERE id = $id RETURNING *"
 
+    it "WHERE MATCH" \_ -> do
+      toSQL typedMatchWhere `shouldEqual` "SELECT * FROM articles WHERE body MATCH $query"
+
+    it "WHERE tuple MATCH" \_ -> do
+      toSQL typedMatchTupleWhere `shouldEqual` "SELECT * FROM articles WHERE (title, body) MATCH $query"
+
+    it "selectRaw with fts_score" \_ -> do
+      toSQL typedSelectRaw `shouldEqual` "SELECT title, fts_score(title, body, $query) AS score FROM articles WHERE (title, body) MATCH $query"
+
+    it "orderByRaw" \_ -> do
+      toSQL typedOrderByRaw `shouldEqual` "SELECT title, fts_score(title, body, $query) AS score FROM articles WHERE (title, body) MATCH $query ORDER BY score DESC"
+
+    it "fromRaw with vector_top_k" \_ -> do
+      toSQL typedFromRaw `shouldEqual` "SELECT docs.title, top.distance FROM vector_top_k('idx_emb', $probe, 10) AS top JOIN docs ON docs.rowid = top.id WHERE top.distance < $maxDist ORDER BY top.distance ASC"
+
+    it "whereRaw" \_ -> do
+      toSQL typedWhereRaw `shouldEqual` "SELECT * FROM users WHERE id IN (SELECT id FROM other)"
+
+    it "vector32 SQL literal" \_ -> do
+      vector32 [1.0, 2.0, 3.0] `shouldEqual` "vector32('[1.0, 2.0, 3.0]')"
+
+  describe "Turso DDL helpers" do
+    it "createTableDDL with F32Vector" \_ -> do
+      let result = createTableDDL @DocumentsTable
+      result `shouldEqual` "CREATE TABLE documents (body TEXT NOT NULL, embedding F32_BLOB(3) NOT NULL, id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL)"
+
+    it "createVectorIndex" \_ -> do
+      let result = createVectorIndex @"idx_emb" @"documents" @"embedding" @"metric=cosine"
+      result `shouldEqual` "CREATE INDEX idx_emb ON documents (libsql_vector_idx(embedding, 'metric=cosine'))"
+
+    it "createFTSIndex" \_ -> do
+      let result = createFTSIndex @"idx_fts" @"articles" @"title, body"
+      result `shouldEqual` "CREATE INDEX idx_fts ON articles USING fts (title, body)"
+
   describe "Execution against in-memory DB" do
     it "creates table and inserts data" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
@@ -392,6 +498,68 @@ spec = before setupConn do
         )
       (rows :: Array { name :: String, title :: String }) `shouldEqual`
         [ { name: "Alice", title: "Hello" } ]
+
+    it "F32Vector round-trip" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @DocumentsTable)) conn # void
+      let vec = f32Vector @"3" [1.0, 2.0, 3.0]
+      runExecute conn {} (from documentsTable # insert { title: "test", body: "hello", embedding: vec }) # void
+      rows <- runQuery conn {} (from documentsTable # selectAll)
+      let result = map (\r -> unF32Vector r.embedding) (rows :: Array { id :: Int, title :: String, body :: String, embedding :: F32Vector "3" })
+      result `shouldEqual` [[1.0, 2.0, 3.0]]
+
+  describe "Turso vector (against libsql server)" do
+    it "vector insert and read round-trip" \_ -> do
+      conn <- liftEffect $ SQLite.sqlite { url: "http://127.0.0.1:8090" }
+      SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
+      let v1 = f32Vector @"3" [1.0, 0.0, 0.0]
+      let v2 = f32Vector @"3" [0.0, 1.0, 0.0]
+      runExecute conn {} (from vDocsTable # insert { title: "doc1", emb: v1 }) # void
+      runExecute conn {} (from vDocsTable # insert { title: "doc2", emb: v2 }) # void
+      rows <- runQuery conn {} (from vDocsTable # selectAll # orderBy @"id")
+      let titles = map (_.title) (rows :: Array { id :: Int, title :: String, emb :: F32Vector "3" })
+      titles `shouldEqual` ["doc1", "doc2"]
+      let vecs = map (\r -> unF32Vector r.emb) rows
+      vecs `shouldEqual` [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+      SQLite.close conn
+
+    it "vector_distance_cos" \_ -> do
+      conn <- liftEffect $ SQLite.sqlite { url: "http://127.0.0.1:8090" }
+      SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
+      let v1 = f32Vector @"3" [1.0, 0.0, 0.0]
+      let v2 = f32Vector @"3" [0.0, 1.0, 0.0]
+      runExecute conn {} (from vDocsTable # insert { title: "doc1", emb: v1 }) # void
+      runExecute conn {} (from vDocsTable # insert { title: "doc2", emb: v2 }) # void
+      let probe = f32Vector @"3" [1.0, 0.0, 0.0]
+      distRows <- runQuery conn { probe: probe }
+        ( from vDocsTable
+            # selectRaw @"title, vector_distance_cos(emb, $probe) AS dist" @(title :: String, dist :: Number)
+            # where_ @"vector_distance_cos(emb, $probe) IS NOT NULL"
+            # orderByRaw @"dist ASC"
+        )
+      let results = map (\r -> r.title /\ r.dist) (distRows :: Array { title :: String, dist :: Number })
+      results `shouldEqual` [("doc1" /\ 0.0), ("doc2" /\ 1.0)]
+      SQLite.close conn
+
+    it "vector_top_k via fromRaw" \_ -> do
+      conn <- liftEffect $ SQLite.sqlite { url: "http://127.0.0.1:8090" }
+      SQLite.executeSimple (SQLite.SQL "DROP INDEX IF EXISTS topk_idx") conn # void
+      SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS topk_docs") conn # void
+      SQLite.executeSimple (SQLite.SQL "CREATE TABLE topk_docs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, emb F32_BLOB(3) NOT NULL)") conn # void
+      SQLite.executeSimple (SQLite.SQL ("INSERT INTO topk_docs VALUES (1, 'north', " <> vector32 [1.0, 0.0, 0.0] <> ")")) conn # void
+      SQLite.executeSimple (SQLite.SQL ("INSERT INTO topk_docs VALUES (2, 'east', " <> vector32 [0.0, 1.0, 0.0] <> ")")) conn # void
+      SQLite.executeSimple (SQLite.SQL ("INSERT INTO topk_docs VALUES (3, 'northeast', " <> vector32 [0.7, 0.7, 0.0] <> ")")) conn # void
+      SQLite.executeSimple (SQLite.SQL "CREATE INDEX topk_idx ON topk_docs (libsql_vector_idx(emb))") conn # void
+      let probe = f32Vector @"3" [1.0, 0.0, 0.0]
+      rows <- runQuery conn { probe: probe }
+        ( fromRaw @"vector_top_k('topk_idx', $probe, 2) AS top JOIN topk_docs ON topk_docs.rowid = top.id"
+            # selectRaw @"topk_docs.title" @(title :: String)
+            # whereRaw @"1 = 1" @(probe :: F32Vector "3")
+        )
+      let titles = map (_.title) (rows :: Array { title :: String })
+      titles `shouldEqual` ["north", "northeast"]
+      SQLite.close conn
 
 main :: Effect Unit
 main = launchAff_ $ runSpec [ consoleReporter ] spec

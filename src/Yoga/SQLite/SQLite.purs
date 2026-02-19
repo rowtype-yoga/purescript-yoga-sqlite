@@ -121,6 +121,16 @@ foreign import pingImpl :: EffectFn1 Connection (Promise Boolean)
 
 foreign import dateTimeToStringImpl :: JSDate.JSDate -> String
 
+foreign import f32VectorFromArrayImpl :: Array Number -> Foreign
+
+f32VectorFromArray :: Array Number -> Foreign
+f32VectorFromArray = f32VectorFromArrayImpl
+
+foreign import f32VectorToArrayImpl :: Foreign -> Array Number
+
+f32VectorToArray :: Foreign -> Array Number
+f32VectorToArray = f32VectorToArrayImpl
+
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Connection Management
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

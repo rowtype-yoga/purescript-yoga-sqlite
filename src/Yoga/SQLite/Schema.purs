@@ -179,6 +179,27 @@ instance ReadForeign SQLiteBool where
     pure (SQLiteBool (n /= 0))
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- F32Vector: Turso F32_BLOB vector column (dim is a Symbol like "3", "768")
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+newtype F32Vector :: Symbol -> Type
+newtype F32Vector dim = F32Vector Foreign
+
+derive instance Newtype (F32Vector dim) _
+
+f32Vector :: forall @dim. Array Number -> F32Vector dim
+f32Vector arr = F32Vector (SQLite.f32VectorFromArray arr)
+
+unF32Vector :: forall dim. F32Vector dim -> Array Number
+unF32Vector (F32Vector buf) = SQLite.f32VectorToArray buf
+
+vector32 :: Array Number -> String
+vector32 nums = "vector32('[" <> intercalate ", " (map show nums) <> "]')"
+
+instance ReadForeign (F32Vector dim) where
+  readImpl = pure <<< F32Vector
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Nullability: inferred from Maybe
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -245,6 +266,9 @@ instance SQLiteTypeName SQLTime where
 
 instance SQLiteTypeName Json where
   sqliteTypeName _ = "TEXT"
+
+instance IsSymbol dim => SQLiteTypeName (F32Vector dim) where
+  sqliteTypeName _ = "F32_BLOB(" <> reflectSymbol (Proxy :: Proxy dim) <> ")"
 
 instance SQLiteTypeName a => SQLiteTypeName (Maybe a) where
   sqliteTypeName _ = sqliteTypeName (Proxy :: Proxy a)
@@ -374,6 +398,36 @@ instance
     let tableName = reflectSymbol (Proxy :: Proxy name)
     let columns = renderColumnsRL (Proxy :: Proxy rl)
     "CREATE TABLE " <> tableName <> " (" <> intercalate ", " columns <> ")"
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- Turso DDL helpers: vector and FTS index creation
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+createVectorIndex
+  :: forall @indexName @tableName @column @options
+   . IsSymbol indexName
+  => IsSymbol tableName
+  => IsSymbol column
+  => IsSymbol options
+  => String
+createVectorIndex = "CREATE INDEX " <> idx <> " ON " <> tbl <> " (libsql_vector_idx(" <> col <> ", '" <> opts <> "'))"
+  where
+  idx = reflectSymbol (Proxy :: Proxy indexName)
+  tbl = reflectSymbol (Proxy :: Proxy tableName)
+  col = reflectSymbol (Proxy :: Proxy column)
+  opts = reflectSymbol (Proxy :: Proxy options)
+
+createFTSIndex
+  :: forall @indexName @tableName @columns
+   . IsSymbol indexName
+  => IsSymbol tableName
+  => IsSymbol columns
+  => String
+createFTSIndex = "CREATE INDEX " <> idx <> " ON " <> tbl <> " USING fts (" <> cols <> ")"
+  where
+  idx = reflectSymbol (Proxy :: Proxy indexName)
+  tbl = reflectSymbol (Proxy :: Proxy tableName)
+  cols = reflectSymbol (Proxy :: Proxy columns)
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- INSERT SQL generation
@@ -1063,6 +1117,8 @@ else instance AggregateReturnTypeR funcName argType returnType => AggregateRetur
 else instance AggregateReturnTypeR funcName argType returnType => AggregateReturnTypeByHead "r" funcName argType returnType
 else instance AggregateReturnTypeS funcName argType returnType => AggregateReturnTypeByHead "S" funcName argType returnType
 else instance AggregateReturnTypeS funcName argType returnType => AggregateReturnTypeByHead "s" funcName argType returnType
+else instance AggregateReturnTypeV funcName argType returnType => AggregateReturnTypeByHead "V" funcName argType returnType
+else instance AggregateReturnTypeV funcName argType returnType => AggregateReturnTypeByHead "v" funcName argType returnType
 else instance
   Fail (Beside (Text "Unknown function: ") (Quote funcName)) =>
   AggregateReturnTypeByHead head funcName argType returnType
@@ -1105,6 +1161,10 @@ class AggregateReturnTypeF funcName argType returnType | funcName argType -> ret
 
 instance AggregateReturnTypeF "FIRST_VALUE" argType argType
 else instance AggregateReturnTypeF "first_value" argType argType
+else instance AggregateReturnTypeF "FLOOR" argType argType
+else instance AggregateReturnTypeF "floor" argType argType
+else instance AggregateReturnTypeF "FTS_SCORE" argType Number
+else instance AggregateReturnTypeF "fts_score" argType Number
 else instance
   Fail (Beside (Text "Unknown function: ") (Quote funcName)) =>
   AggregateReturnTypeF funcName argType returnType
@@ -1178,6 +1238,18 @@ else instance AggregateReturnTypeS "sum" argType argType
 else instance
   Fail (Beside (Text "Unknown function: ") (Quote funcName)) =>
   AggregateReturnTypeS funcName argType returnType
+
+-- V: vector_extract, vector_distance_cos
+class AggregateReturnTypeV :: Symbol -> Type -> Type -> Constraint
+class AggregateReturnTypeV funcName argType returnType | funcName argType -> returnType
+
+instance AggregateReturnTypeV "vector_extract" argType String
+else instance AggregateReturnTypeV "VECTOR_EXTRACT" argType String
+else instance AggregateReturnTypeV "vector_distance_cos" argType Number
+else instance AggregateReturnTypeV "VECTOR_DISTANCE_COS" argType Number
+else instance
+  Fail (Beside (Text "Unknown function: ") (Quote funcName)) =>
+  AggregateReturnTypeV funcName argType returnType
 
 -- After aggregate ): require AS alias, then continue
 class ParseAfterAggregate :: Symbol -> Row (Row Type) -> Type -> RL.RowList Type -> RL.RowList Type -> Constraint
@@ -1675,6 +1747,8 @@ instance FlushWhereWordF "FALSE" currentType tables paramsIn currentType paramsI
 else instance FlushWhereWordF "false" currentType tables paramsIn currentType paramsIn
 else instance FlushWhereWordF "FLOOR" currentType tables paramsIn currentType paramsIn
 else instance FlushWhereWordF "floor" currentType tables paramsIn currentType paramsIn
+else instance FlushWhereWordF "FTS_SCORE" currentType tables paramsIn Number paramsIn
+else instance FlushWhereWordF "fts_score" currentType tables paramsIn Number paramsIn
 else instance
   ( ResolveColumn word tables entry
   , ExtractType entry typ
@@ -1749,6 +1823,8 @@ instance FlushWhereWordM "MIN" currentType tables paramsIn currentType paramsIn
 else instance FlushWhereWordM "min" currentType tables paramsIn currentType paramsIn
 else instance FlushWhereWordM "MAX" currentType tables paramsIn currentType paramsIn
 else instance FlushWhereWordM "max" currentType tables paramsIn currentType paramsIn
+else instance FlushWhereWordM "MATCH" currentType tables paramsIn currentType paramsIn
+else instance FlushWhereWordM "match" currentType tables paramsIn currentType paramsIn
 else instance
   ( ResolveColumn word tables entry
   , ExtractType entry typ
@@ -1825,6 +1901,10 @@ class FlushWhereWordV :: Symbol -> Type -> Row (Row Type) -> RL.RowList Type -> 
 class FlushWhereWordV word currentType tables paramsIn currentTypeOut paramsOut | word currentType tables paramsIn -> currentTypeOut paramsOut
 
 instance FlushWhereWordV "varchar" currentType tables paramsIn currentType paramsIn
+else instance FlushWhereWordV "vector_extract" currentType tables paramsIn String paramsIn
+else instance FlushWhereWordV "VECTOR_EXTRACT" currentType tables paramsIn String paramsIn
+else instance FlushWhereWordV "vector_distance_cos" currentType tables paramsIn Number paramsIn
+else instance FlushWhereWordV "VECTOR_DISTANCE_COS" currentType tables paramsIn Number paramsIn
 else instance
   ( ResolveColumn word tables entry
   , ExtractType entry typ
@@ -2722,6 +2802,9 @@ from _ = Q { sql: reflectSymbol (Proxy :: Proxy name), values: [] }
 fromAs :: forall @alias name cols tables. IsSymbol name => IsSymbol alias => Row.Cons alias cols () tables => Proxy (Table name cols) -> Q tables () () ()
 fromAs _ = Q { sql: reflectSymbol (Proxy :: Proxy name) <> " " <> reflectSymbol (Proxy :: Proxy alias), values: [] }
 
+fromRaw :: forall @sql tables. IsSymbol sql => Q tables () () ()
+fromRaw = Q { sql: reflectSymbol (Proxy :: Proxy sql), values: [] }
+
 selectAll
   :: forall tables name cols result r p stage stage'
    . SingleTable tables name cols
@@ -2775,6 +2858,22 @@ selectDistinct
   -> Q tables result p stage''
 selectDistinct (Q q) = Q (q { sql = "SELECT DISTINCT " <> reflectSymbol (Proxy :: Proxy sel) <> " FROM " <> q.sql })
 
+selectRaw
+  :: forall @sel @result tables r p stage stage'
+   . IsSymbol sel
+  => Row.Lacks "select" stage
+  => Row.Lacks "insert" stage
+  => Row.Lacks "set" stage
+  => Row.Lacks "delete" stage
+  => Row.Lacks "where" stage
+  => Row.Lacks "orderBy" stage
+  => Row.Lacks "limit" stage
+  => Row.Lacks "offset" stage
+  => Row.Cons "select" Unit stage stage'
+  => Q tables r p stage
+  -> Q tables result p stage'
+selectRaw (Q q) = Q (q { sql = "SELECT " <> reflectSymbol (Proxy :: Proxy sel) <> " FROM " <> q.sql })
+
 where_
   :: forall @whr tables result params p stage stage'
    . IsSymbol whr
@@ -2792,6 +2891,22 @@ where_
   -> Q tables result params stage'
 where_ (Q q) = Q (q { sql = q.sql <> " WHERE " <> reflectSymbol (Proxy :: Proxy whr) })
 
+whereRaw
+  :: forall @whr @params tables result p stage stage'
+   . IsSymbol whr
+  => HasAnyDML stage
+  => Row.Lacks "where" stage
+  => Row.Lacks "insert" stage
+  => Row.Lacks "groupBy" stage
+  => Row.Lacks "having" stage
+  => Row.Lacks "orderBy" stage
+  => Row.Lacks "limit" stage
+  => Row.Lacks "offset" stage
+  => Row.Cons "where" Unit stage stage'
+  => Q tables result p stage
+  -> Q tables result params stage'
+whereRaw (Q q) = Q (q { sql = q.sql <> " WHERE " <> reflectSymbol (Proxy :: Proxy whr) })
+
 orderBy
   :: forall @cols tables result params stage stage'
    . IsSymbol cols
@@ -2805,6 +2920,18 @@ orderBy
   => Q tables result params stage
   -> Q tables result params stage'
 orderBy (Q q) = Q (q { sql = q.sql <> " ORDER BY " <> reflectSymbol (Proxy :: Proxy cols) })
+
+orderByRaw
+  :: forall @cols tables result params stage stage'
+   . IsSymbol cols
+  => HasClause "select" stage
+  => Row.Lacks "orderBy" stage
+  => Row.Lacks "limit" stage
+  => Row.Lacks "offset" stage
+  => Row.Cons "orderBy" Unit stage stage'
+  => Q tables result params stage
+  -> Q tables result params stage'
+orderByRaw (Q q) = Q (q { sql = q.sql <> " ORDER BY " <> reflectSymbol (Proxy :: Proxy cols) })
 
 groupBy
   :: forall @cols tables result params stage stage'
