@@ -1,58 +1,105 @@
-import Database from 'better-sqlite3';
+import { createClient } from "@libsql/client";
 
-// Open a database connection
-export const openImpl = (path) => {
-  const db = new Database(path);
-  // Enable foreign keys by default
-  db.pragma('foreign_keys = ON');
-  return db;
+// Create client connection
+export const createClientImpl = (config) => {
+  return createClient(config);
 };
 
-// Close a database connection
-export const closeImpl = (db) => {
-  db.close();
+// Close connection
+export const closeImpl = async (client) => {
+  client.close();
 };
 
-// Execute a statement (INSERT/UPDATE/DELETE)
-export const execImpl = (sql, params, db) => {
-  const stmt = db.prepare(sql);
-  stmt.run(...params);
+// Execute query with positional args, return full result
+export const queryImpl = async (client, sql, args) => {
+  const result = await client.execute({ sql, args });
+  return {
+    rows: result.rows.map(row => ({ ...row })),
+    columns: result.columns,
+    rowsAffected: result.rowsAffected,
+    lastInsertRowid: result.lastInsertRowid != null
+      ? Number(result.lastInsertRowid)
+      : null
+  };
 };
 
-// Query for multiple rows
-export const queryImpl = (sql, params, db) => {
-  const stmt = db.prepare(sql);
-  const rows = stmt.all(...params);
-  // Convert rows to arrays of values
-  return rows.map(row => Object.values(row));
+// Execute query, return only first row or null
+export const queryOneImpl = async (client, sql, args) => {
+  const result = await client.execute({ sql, args });
+  if (result.rows.length === 0) return null;
+  return { ...result.rows[0] };
 };
 
-// Query for a single row
-export const queryOneImpl = (sql, params, db) => {
-  const stmt = db.prepare(sql);
-  const row = stmt.get(...params);
-  if (!row) return null;
-  // Convert row to array of values
-  return Object.values(row);
+// Execute statement, return rows affected count
+export const executeImpl = async (client, sql, args) => {
+  const result = await client.execute({ sql, args });
+  return result.rowsAffected;
 };
 
-// Get last inserted row ID
-export const lastInsertRowIdImpl = (db) => {
-  const result = db.prepare('SELECT last_insert_rowid() as id').get();
-  return result.id;
+// Execute simple statement (no args)
+export const querySimpleImpl = async (client, sql) => {
+  const result = await client.execute(sql);
+  return {
+    rows: result.rows.map(row => ({ ...row })),
+    columns: result.columns,
+    rowsAffected: result.rowsAffected,
+    lastInsertRowid: result.lastInsertRowid != null
+      ? Number(result.lastInsertRowid)
+      : null
+  };
 };
 
-// Begin a transaction
-export const beginTransactionImpl = (db) => {
-  return db.transaction(() => { });
+export const executeSimpleImpl = async (client, sql) => {
+  const result = await client.execute(sql);
+  return result.rowsAffected;
 };
 
-// Commit a transaction (no-op with better-sqlite3, handled automatically)
-export const commitImpl = (_txn) => {
-  // better-sqlite3 auto-commits when transaction function completes
+// Transaction operations
+export const beginImpl = async (client) => {
+  return await client.transaction("write");
 };
 
-// Rollback a transaction (no-op with better-sqlite3, handled by throwing)
-export const rollbackImpl = (_txn) => {
-  // better-sqlite3 auto-rolls back when transaction function throws
+export const commitImpl = async (tx) => {
+  await tx.commit();
 };
+
+export const rollbackImpl = async (tx) => {
+  await tx.rollback();
+};
+
+// Query within transaction
+export const txQueryImpl = async (tx, sql, args) => {
+  const result = await tx.execute({ sql, args });
+  return {
+    rows: result.rows.map(row => ({ ...row })),
+    columns: result.columns,
+    rowsAffected: result.rowsAffected,
+    lastInsertRowid: result.lastInsertRowid != null
+      ? Number(result.lastInsertRowid)
+      : null
+  };
+};
+
+export const txQueryOneImpl = async (tx, sql, args) => {
+  const result = await tx.execute({ sql, args });
+  if (result.rows.length === 0) return null;
+  return { ...result.rows[0] };
+};
+
+export const txExecuteImpl = async (tx, sql, args) => {
+  const result = await tx.execute({ sql, args });
+  return result.rowsAffected;
+};
+
+// Ping: check connection health
+export const pingImpl = async (client) => {
+  try {
+    await client.execute("SELECT 1");
+    return true;
+  } catch (_err) {
+    return false;
+  }
+};
+
+// Convert DateTime (JSDate) to ISO string for SQLite TEXT storage
+export const dateTimeToStringImpl = (jsDate) => jsDate.toISOString();

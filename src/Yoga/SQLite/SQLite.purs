@@ -2,192 +2,190 @@ module Yoga.SQLite.SQLite where
 
 import Prelude
 
-import Data.Array (length)
-import Data.Either (Either(..))
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe)
 import Data.Newtype (class Newtype)
 import Data.Nullable (Nullable)
 import Data.Nullable as Nullable
-import Data.Traversable (traverse)
+import Data.JSDate as JSDate
 import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Uncurried (EffectFn1, EffectFn2, EffectFn3, runEffectFn1, runEffectFn2, runEffectFn3)
+import Foreign (Foreign)
+import Prim.Row (class Union)
 import Promise (Promise)
 import Promise.Aff (toAffE) as Promise
-import Yoga.SQL.Types (class FromResultArray, SQLParameter, SQLResult, fromResultArray)
 import Unsafe.Coerce (unsafeCoerce)
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Opaque Foreign Types
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-foreign import data DBConnection :: Type
+foreign import data Connection :: Type
 foreign import data Transaction :: Type
-foreign import data Statement :: Type -> Type -> Type
+foreign import data SQLiteValue :: Type
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Newtypes for Type Safety
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-newtype DatabasePath = DatabasePath String
+newtype SQL = SQL String
 
-derive instance Newtype DatabasePath _
-derive newtype instance Show DatabasePath
+derive instance Newtype SQL _
+derive newtype instance Eq SQL
+derive newtype instance Show SQL
 
-newtype NumberOfChanges = NumberOfChanges Int
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- Type-safe SQL parameters
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-derive instance Newtype NumberOfChanges _
-derive newtype instance Show NumberOfChanges
+class ToSQLiteValue a where
+  toSQLiteValue :: a -> SQLiteValue
 
-newtype RowId = RowId Int
+instance ToSQLiteValue String where
+  toSQLiteValue = unsafeCoerce
 
-derive instance Newtype RowId _
-derive newtype instance Show RowId
+instance ToSQLiteValue Int where
+  toSQLiteValue = unsafeCoerce
+
+instance ToSQLiteValue Number where
+  toSQLiteValue = unsafeCoerce
+
+instance ToSQLiteValue Foreign where
+  toSQLiteValue = unsafeCoerce
+
+param :: forall a. ToSQLiteValue a => a -> Array SQLiteValue
+param x = [ toSQLiteValue x ]
+
+params :: forall a. ToSQLiteValue a => Array a -> Array SQLiteValue
+params xs = map toSQLiteValue xs
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- Result types
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+type Row = Foreign
+
+type QueryResult =
+  { rows :: Array Row
+  , columns :: Array String
+  , rowsAffected :: Int
+  , lastInsertRowid :: Maybe Int
+  }
+
+type QueryResultImpl =
+  { rows :: Array Row
+  , columns :: Array String
+  , rowsAffected :: Int
+  , lastInsertRowid :: Nullable Int
+  }
+
+fromQueryResultImpl :: QueryResultImpl -> QueryResult
+fromQueryResultImpl r =
+  { rows: r.rows
+  , columns: r.columns
+  , rowsAffected: r.rowsAffected
+  , lastInsertRowid: Nullable.toMaybe r.lastInsertRowid
+  }
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- Connection configuration
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+type SQLiteConfigImpl =
+  ( url :: String
+  , authToken :: String
+  )
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- FFI Imports
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-foreign import openImpl :: EffectFn1 String DBConnection
-foreign import closeImpl :: EffectFn1 DBConnection Unit
-foreign import execImpl :: EffectFn3 String (Array SQLParameter) DBConnection Unit
-foreign import queryImpl :: EffectFn3 String (Array SQLParameter) DBConnection (Array (Array SQLResult))
-foreign import queryOneImpl :: EffectFn3 String (Array SQLParameter) DBConnection (Nullable (Array SQLResult))
-foreign import lastInsertRowIdImpl :: EffectFn1 DBConnection Int
-foreign import beginTransactionImpl :: EffectFn1 DBConnection Transaction
-foreign import commitImpl :: EffectFn1 Transaction Unit
-foreign import rollbackImpl :: EffectFn1 Transaction Unit
+foreign import createClientImpl :: forall opts. EffectFn1 { | opts } Connection
+foreign import closeImpl :: EffectFn1 Connection (Promise Unit)
+
+foreign import queryImpl :: EffectFn3 Connection String (Array SQLiteValue) (Promise QueryResultImpl)
+foreign import queryOneImpl :: EffectFn3 Connection String (Array SQLiteValue) (Promise (Nullable Row))
+foreign import executeImpl :: EffectFn3 Connection String (Array SQLiteValue) (Promise Int)
+foreign import querySimpleImpl :: EffectFn2 Connection String (Promise QueryResultImpl)
+foreign import executeSimpleImpl :: EffectFn2 Connection String (Promise Int)
+
+foreign import beginImpl :: EffectFn1 Connection (Promise Transaction)
+foreign import commitImpl :: EffectFn1 Transaction (Promise Unit)
+foreign import rollbackImpl :: EffectFn1 Transaction (Promise Unit)
+
+foreign import txQueryImpl :: EffectFn3 Transaction String (Array SQLiteValue) (Promise QueryResultImpl)
+foreign import txQueryOneImpl :: EffectFn3 Transaction String (Array SQLiteValue) (Promise (Nullable Row))
+foreign import txExecuteImpl :: EffectFn3 Transaction String (Array SQLiteValue) (Promise Int)
+
+foreign import pingImpl :: EffectFn1 Connection (Promise Boolean)
+
+foreign import dateTimeToStringImpl :: JSDate.JSDate -> String
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- Database Operations
+-- Connection Management
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
--- | Open a database connection
-open :: DatabasePath -> Effect DBConnection
-open (DatabasePath path) = runEffectFn1 openImpl path
+sqlite :: forall opts opts_. Union opts opts_ SQLiteConfigImpl => { | opts } -> Effect Connection
+sqlite opts = runEffectFn1 createClientImpl opts
 
--- | Close a database connection
-close :: DBConnection -> Effect Unit
-close = runEffectFn1 closeImpl
+close :: Connection -> Aff Unit
+close = runEffectFn1 closeImpl >>> Promise.toAffE
 
--- | Execute a statement (INSERT/UPDATE/DELETE)
-exec :: String -> Array SQLParameter -> DBConnection -> Effect Unit
-exec sql params db = runEffectFn3 execImpl sql params db
-
--- | Query for multiple rows
-query :: String -> Array SQLParameter -> DBConnection -> Effect (Array (Array SQLResult))
-query sql params db = runEffectFn3 queryImpl sql params db
-
--- | Query for a single row
-queryOne :: String -> Array SQLParameter -> DBConnection -> Effect (Maybe (Array SQLResult))
-queryOne sql params db = runEffectFn3 queryOneImpl sql params db <#> Nullable.toMaybe
-
--- | Get last inserted row ID
-lastInsertRowId :: DBConnection -> Effect Int
-lastInsertRowId = runEffectFn1 lastInsertRowIdImpl
+ping :: Connection -> Aff Boolean
+ping = runEffectFn1 pingImpl >>> Promise.toAffE
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- Transaction Support
+-- Query Operations
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
--- | Begin a transaction
-beginTransaction :: DBConnection -> Effect Transaction
-beginTransaction = runEffectFn1 beginTransactionImpl
+query :: SQL -> Array SQLiteValue -> Connection -> Aff QueryResult
+query (SQL sql) args conn =
+  runEffectFn3 queryImpl conn sql args # Promise.toAffE <#> fromQueryResultImpl
 
--- | Commit a transaction
-commit :: Transaction -> Effect Unit
-commit = runEffectFn1 commitImpl
+querySimple :: SQL -> Connection -> Aff QueryResult
+querySimple (SQL sql) conn =
+  runEffectFn2 querySimpleImpl conn sql # Promise.toAffE <#> fromQueryResultImpl
 
--- | Rollback a transaction
-rollback :: Transaction -> Effect Unit
-rollback = runEffectFn1 rollbackImpl
+queryOne :: SQL -> Array SQLiteValue -> Connection -> Aff (Maybe Row)
+queryOne (SQL sql) args conn =
+  runEffectFn3 queryOneImpl conn sql args # Promise.toAffE <#> Nullable.toMaybe
 
--- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- Prepared Statements
--- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+execute :: SQL -> Array SQLiteValue -> Connection -> Aff Int
+execute (SQL sql) args conn =
+  runEffectFn3 executeImpl conn sql args # Promise.toAffE
 
-newtype PreparedStatement :: forall k1 k2. k1 -> k2 -> Type
-newtype PreparedStatement i o = PreparedStatement
-  { sql :: String
-  , db :: DBConnection
-  }
-
--- | Prepare a statement
-prepare :: forall @i @o. String -> DBConnection -> Effect (Statement i o)
-prepare sql db = pure $ unsafeCoerce (PreparedStatement { sql, db })
+executeSimple :: SQL -> Connection -> Aff Int
+executeSimple (SQL sql) conn =
+  runEffectFn2 executeSimpleImpl conn sql # Promise.toAffE
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- Info Type for Mutations
+-- Transaction Operations
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type InfoImpl = { changes :: Int, lastInsertRowid :: Nullable Int }
+begin :: Connection -> Aff Transaction
+begin = runEffectFn1 beginImpl >>> Promise.toAffE
 
-type Info = { changes :: NumberOfChanges, lastInsertRowid :: Maybe RowId }
+commit :: Transaction -> Aff Unit
+commit = runEffectFn1 commitImpl >>> Promise.toAffE
 
-fromRowInfoImpl :: InfoImpl -> Info
-fromRowInfoImpl = \{ changes, lastInsertRowid } ->
-  { changes: NumberOfChanges changes
-  , lastInsertRowid: Nullable.toMaybe lastInsertRowid <#> RowId
-  }
+rollback :: Transaction -> Aff Unit
+rollback = runEffectFn1 rollbackImpl >>> Promise.toAffE
 
--- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- Statement Execution
--- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+txQuery :: SQL -> Array SQLiteValue -> Transaction -> Aff QueryResult
+txQuery (SQL sql) args txn =
+  runEffectFn3 txQueryImpl txn sql args # Promise.toAffE <#> fromQueryResultImpl
 
--- | Run a statement (INSERT/UPDATE/DELETE)
-run :: forall i. Array SQLParameter -> Statement i Void -> Effect Info
-run params st = do
-  let PreparedStatement { sql, db } = unsafeCoerce st
-  exec sql params db
-  -- Get last insert row ID
-  rowId <- lastInsertRowId db
-  pure { changes: NumberOfChanges 1, lastInsertRowid: Just (RowId rowId) }
+txQueryOne :: SQL -> Array SQLiteValue -> Transaction -> Aff (Maybe Row)
+txQueryOne (SQL sql) args txn =
+  runEffectFn3 txQueryOneImpl txn sql args # Promise.toAffE <#> Nullable.toMaybe
 
--- | Run a statement with no parameters
-run_ :: Statement Void Void -> Effect Info
-run_ = run []
-
--- | Query all rows (raw results)
-allRaw :: forall i o. Array SQLParameter -> Statement i o -> Effect (Array (Array SQLResult))
-allRaw params st = do
-  let PreparedStatement { sql, db } = unsafeCoerce st
-  query sql params db
-
--- | Query all rows with result parsing
-all ::
-  forall i @o.
-  Array SQLParameter ->
-  (Array SQLResult -> Either String o) ->
-  Statement i o ->
-  Effect (Either String (Array o))
-all params toOutput st = do
-  rows <- allRaw params st
-  pure $ traverse toOutput rows
-
--- | Query exactly one row
-all1 ::
-  forall i o.
-  Array SQLParameter ->
-  (Array SQLResult -> Either String o) ->
-  Statement i o ->
-  Effect (Either String o)
-all1 params fn st =
-  all params fn st
-    <#> case _ of
-      Right [ x ] -> Right x
-      Right [] -> Left "Expected a single result, got empty array"
-      Right arr -> Left $ "Expected a single result, got " <> show (length arr)
-      Left err -> Left err
-
--- | Query all rows with no parameters
-all_ :: forall o. Array SQLParameter -> Statement Void o -> Effect (Array (Array SQLResult))
-all_ params = allRaw params
+txExecute :: SQL -> Array SQLiteValue -> Transaction -> Aff Int
+txExecute (SQL sql) args txn =
+  runEffectFn3 txExecuteImpl txn sql args # Promise.toAffE
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
--- Statement Metadata
+-- DateTime conversion helper
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-type StatementSource = String
-
-statementSource :: forall i o. Statement i o -> StatementSource
-statementSource = unsafeCoerce >>> \(PreparedStatement rec) -> rec.sql
+dateTimeToString :: JSDate.JSDate -> String
+dateTimeToString = dateTimeToStringImpl

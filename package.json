@@ -1,12 +1,15 @@
 {
   "name": "purescript-yoga-sqlite",
   "version": "0.1.0",
-  "description": "PureScript FFI bindings for SQLite",
+  "description": "PureScript FFI bindings for SQLite via @libsql/client",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/rowtype-yoga/purescript-yoga-backend-stack.git",
     "directory": "packages/yoga-sqlite"
   },
-  "keywords": ["purescript", "ffi", "bindings", "yoga"]
+  "keywords": ["purescript", "ffi", "bindings", "yoga", "sqlite", "libsql"],
+  "dependencies": {
+    "@libsql/client": "^0.14.0"
+  }
 }
