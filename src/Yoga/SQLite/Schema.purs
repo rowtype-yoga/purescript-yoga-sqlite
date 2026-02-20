@@ -357,7 +357,7 @@ else instance (RenderDefaultValue val a, RenderConstraint a) => RenderConstraint
 
 else instance (IsSymbol expr, RenderConstraint a) => RenderConstraint (DefaultExpr expr a) where
   renderConstraint _ = joinConstraints
-    ("DEFAULT " <> reflectSymbol (Proxy :: Proxy expr))
+    ("DEFAULT (" <> reflectSymbol (Proxy :: Proxy expr) <> ")")
     (renderConstraint (Proxy :: Proxy a))
 
 else instance (IsSymbol table, IsSymbol col, RenderConstraint a) => RenderConstraint (ForeignKey table References col a) where
