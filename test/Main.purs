@@ -10,12 +10,12 @@ import Data.Newtype (un)
 import Data.Tuple.Nested ((/\))
 import Data.Time (Time(..))
 import Effect (Effect)
-import Data.Time.Duration (Milliseconds(..))
+import Data.Time.Duration (Seconds(..), fromDuration)
 import Effect.Aff (Aff, bracket, launchAff_)
 import Effect.Class (liftEffect)
 import Partial.Unsafe (unsafePartial)
 import Prim.Boolean (True)
-import Test.Spec (Spec, before, describe, it)
+import Test.Spec (Spec, around, before, describe, it)
 import Test.Spec.Assertions (shouldEqual)
 import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner (runSpec)
@@ -532,11 +532,16 @@ composeFile = Docker.ComposeFile "docker-compose.test.yml"
 libsqlUrl :: String
 libsqlUrl = "http://127.0.0.1:8090"
 
+withLibSql :: (SQLite.Connection -> Aff Unit) -> Aff Unit
+withLibSql test = do
+  conn <- SQLite.sqlite { url: libsqlUrl } # liftEffect
+  test conn
+  SQLite.close conn
+
 libsqlSpec :: Spec Unit
-libsqlSpec = do
+libsqlSpec = around withLibSql do
   describe "Turso vector (against libsql server)" do
-    it "vector insert and read round-trip" \_ -> do
-      conn <- SQLite.sqlite { url: libsqlUrl } # liftEffect
+    it "vector insert and read round-trip" \conn -> do
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
       SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
       let v1 = f32Vector @"3" [1.0, 0.0, 0.0]
@@ -548,10 +553,8 @@ libsqlSpec = do
       titles `shouldEqual` ["doc1", "doc2"]
       let vecs = map (\r -> unF32Vector r.emb) rows
       vecs `shouldEqual` [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
-      SQLite.close conn
 
-    it "vector_distance_cos" \_ -> do
-      conn <- SQLite.sqlite { url: libsqlUrl } # liftEffect
+    it "vector_distance_cos" \conn -> do
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
       SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
       let v1 = f32Vector @"3" [1.0, 0.0, 0.0]
@@ -567,10 +570,8 @@ libsqlSpec = do
         )
       let results = map (\r -> r.title /\ r.dist) (distRows :: Array { title :: String, dist :: Number })
       results `shouldEqual` [("doc1" /\ 0.0), ("doc2" /\ 1.0)]
-      SQLite.close conn
 
-    it "vector_top_k via fromRaw" \_ -> do
-      conn <- SQLite.sqlite { url: libsqlUrl } # liftEffect
+    it "vector_top_k via fromRaw" \conn -> do
       SQLite.executeSimple (SQLite.SQL "DROP INDEX IF EXISTS topk_idx") conn # void
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS topk_docs") conn # void
       SQLite.executeSimple (SQLite.SQL "CREATE TABLE topk_docs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, emb F32_BLOB(3) NOT NULL)") conn # void
@@ -586,12 +587,11 @@ libsqlSpec = do
         )
       let titles = map (_.title) (rows :: Array { title :: String })
       titles `shouldEqual` ["north", "northeast"]
-      SQLite.close conn
 
 main :: Effect Unit
 main = launchAff_ do
   bracket
-    (Docker.startService composeFile (Docker.Timeout (Milliseconds 30000.0)))
+    (Docker.startService composeFile (Docker.Timeout (30.0 # Seconds # fromDuration)))
     (\_ -> Docker.stopService composeFile)
     ( \_ -> runSpec [ consoleReporter ] do
         spec
