@@ -106,7 +106,7 @@ f64DocsTable :: Proxy F64DocsTable
 f64DocsTable = Proxy
 
 type RandomRowIdTable = Table "things"
-  ( id :: Int # PrimaryKey # AutoIncrement # RandomRowId
+  ( id :: Int # PrimaryKey # RandomRowId
   , name :: String
   )
 
@@ -686,10 +686,29 @@ spec = before setupConn do
       let actives = map (\r -> r.active) (rows :: Array { id :: Int, active :: SQLiteBool, role :: String, score :: Int })
       actives `shouldEqual` [SQLiteBool false]
 
+    it "RandomRowId column excluded from typed insert" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @RandomRowIdTable)) conn # void
+      runExecute conn {} (from (Proxy :: Proxy RandomRowIdTable) # insert { name: "hello" }) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy RandomRowIdTable) # select @"name")
+      let names = map (_.name) (rows :: Array { name :: String })
+      names `shouldEqual` ["hello"]
+
+    it "DateTime as SQLiteValue in batch" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @EventsTable)) conn # void
+      SQLite.execute
+        (SQLite.SQL "INSERT INTO events (title, metadata, created_at) VALUES (?1, ?2, ?3)")
+        [ SQLite.toSQLiteValue "test"
+        , SQLite.toSQLiteValue "{}"
+        , SQLite.toSQLiteValue testDateTime
+        ]
+        conn # void
+      rows <- runQuery conn {} (from eventsTable # selectAll)
+      Array.length rows `shouldEqual` 1
+
   describe "DDL RANDOM ROWID" do
     it "generates DDL with RANDOM ROWID suffix" \_ -> do
       let result = createTableDDL @RandomRowIdTable
-      result `shouldEqual` "CREATE TABLE things (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) RANDOM ROWID"
+      result `shouldEqual` "CREATE TABLE things (id INTEGER NOT NULL PRIMARY KEY, name TEXT NOT NULL) RANDOM ROWID"
 
   describe "DDL F64Vector" do
     it "createTableDDL with F64Vector" \_ -> do

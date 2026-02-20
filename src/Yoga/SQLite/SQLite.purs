@@ -2,6 +2,7 @@ module Yoga.SQLite.SQLite where
 
 import Prelude
 
+import Data.DateTime (DateTime)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
 import Data.Nullable (Nullable, toNullable)
@@ -55,7 +56,10 @@ instance ToSQLiteValue BigInt where
   toSQLiteValue = unsafeCoerce
 
 instance ToSQLiteValue Boolean where
-  toSQLiteValue = unsafeCoerce
+  toSQLiteValue b = unsafeCoerce (if b then 1 else 0)
+
+instance ToSQLiteValue DateTime where
+  toSQLiteValue dt = unsafeCoerce (dateTimeToStringImpl (JSDate.fromDateTime dt))
 
 instance ToSQLiteValue a => ToSQLiteValue (Maybe a) where
   toSQLiteValue = case _ of
@@ -248,6 +252,11 @@ migrate stmts conn =
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 data TransactionMode = Write | Read | Deferred
+
+derive instance Eq TransactionMode
+
+instance Show TransactionMode where
+  show = transactionModeToString
 
 transactionModeToString :: TransactionMode -> String
 transactionModeToString = case _ of
