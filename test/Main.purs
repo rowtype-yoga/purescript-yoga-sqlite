@@ -297,6 +297,7 @@ typedSelectVectorDistL2
   :: Q _ (title :: String, dist :: Number) (probe :: F32Vector "3") _
 typedSelectVectorDistL2 = from vDocsTable
   # select @"title, vector_distance_l2(emb, $probe) AS dist"
+  # where_ @"vector_distance_l2(emb, $probe) IS NOT NULL"
 
 typedWhereFtsScore
   :: Q _ _ (query :: String, minScore :: Number) _
@@ -637,7 +638,7 @@ spec = before setupConn do
       toSQL typedWhereVectorDistL2 `shouldEqual` "SELECT * FROM vdocs WHERE vector_distance_l2(emb, $probe) < $maxDist"
 
     it "select with vector_distance_l2 alias" \_ -> do
-      toSQL typedSelectVectorDistL2 `shouldEqual` "SELECT title, vector_distance_l2(emb, $probe) AS dist FROM vdocs"
+      toSQL typedSelectVectorDistL2 `shouldEqual` "SELECT title, vector_distance_l2(emb, $probe) AS dist FROM vdocs WHERE vector_distance_l2(emb, $probe) IS NOT NULL"
 
 composeFile :: Docker.ComposeFile
 composeFile = Docker.ComposeFile "docker-compose.test.yml"
