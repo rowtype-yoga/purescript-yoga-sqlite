@@ -101,6 +101,9 @@
             },
             {
               "spec": ">=7.0.0 <8.0.0"
+            },
+            {
+              "yoga-test-docker": ">=0.1.0 <1.0.0"
             }
           ]
         }
@@ -992,6 +995,18 @@
         "unsafe-coerce",
         "variant",
         "yoga-tree"
+      ]
+    },
+    "yoga-test-docker": {
+      "type": "registry",
+      "version": "0.1.1",
+      "integrity": "sha256-BKyHoGahs1D5PbjqSKL+6vvUJQ62mbpXYJOF9UwaGb8=",
+      "dependencies": [
+        "aff",
+        "datetime",
+        "exceptions",
+        "newtype",
+        "prelude"
       ]
     },
     "yoga-tree": {

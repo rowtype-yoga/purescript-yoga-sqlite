@@ -43,3 +43,4 @@ package:
       - spec: ">=7.0.0 <8.0.0"
       - console: ">=6.0.0 <7.0.0"
       - partial: ">=4.0.0 <5.0.0"
+      - yoga-test-docker: ">=0.1.0 <1.0.0"
