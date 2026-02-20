@@ -11,6 +11,7 @@ import Effect (Effect)
 import Effect.Aff (Aff)
 import Effect.Uncurried (EffectFn1, EffectFn2, EffectFn3, runEffectFn1, runEffectFn2, runEffectFn3)
 import Foreign (Foreign)
+import JS.BigInt (BigInt)
 import Prim.Row (class Union)
 import Promise (Promise)
 import Promise.Aff (toAffE) as Promise
@@ -50,6 +51,12 @@ instance ToSQLiteValue Int where
 instance ToSQLiteValue Number where
   toSQLiteValue = unsafeCoerce
 
+instance ToSQLiteValue BigInt where
+  toSQLiteValue = unsafeCoerce
+
+instance ToSQLiteValue Boolean where
+  toSQLiteValue = unsafeCoerce
+
 instance ToSQLiteValue Foreign where
   toSQLiteValue = unsafeCoerce
 
@@ -70,7 +77,7 @@ type QueryResult =
   , columns :: Array String
   , columnTypes :: Array String
   , rowsAffected :: Int
-  , lastInsertRowid :: Maybe Int
+  , lastInsertRowid :: Maybe BigInt
   }
 
 type QueryResultImpl =
@@ -78,7 +85,7 @@ type QueryResultImpl =
   , columns :: Array String
   , columnTypes :: Array String
   , rowsAffected :: Int
-  , lastInsertRowid :: Nullable Int
+  , lastInsertRowid :: Nullable BigInt
   }
 
 fromQueryResultImpl :: QueryResultImpl -> QueryResult
@@ -110,7 +117,9 @@ type SQLiteConfigImpl =
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 foreign import createClientImpl :: forall opts. EffectFn1 { | opts } Connection
-foreign import closeImpl :: EffectFn1 Connection (Promise Unit)
+foreign import closeImpl :: EffectFn1 Connection Unit
+foreign import closedImpl :: EffectFn1 Connection Boolean
+foreign import protocolImpl :: EffectFn1 Connection String
 
 foreign import queryImpl :: EffectFn3 Connection String (Array SQLiteValue) (Promise QueryResultImpl)
 foreign import queryOneImpl :: EffectFn3 Connection String (Array SQLiteValue) (Promise (Nullable Row))
@@ -135,8 +144,8 @@ type BatchStatement = { sql :: String, args :: Array SQLiteValue }
 
 foreign import batchImpl :: EffectFn3 Connection (Array BatchStatement) String (Promise (Array QueryResultImpl))
 
-type ReplicatedImpl = { frame_no :: Int, frames_synced :: Int }
-type Replicated = { frame_no :: Int, frames_synced :: Int }
+type ReplicatedImpl = { frame_no :: Number, frames_synced :: Number }
+type Replicated = { frame_no :: Number, frames_synced :: Number }
 
 foreign import syncImpl :: EffectFn1 Connection (Promise (Nullable ReplicatedImpl))
 foreign import executeMultipleImpl :: EffectFn2 Connection String (Promise Unit)
@@ -173,8 +182,14 @@ f64VectorToArray = f64VectorToArrayImpl
 sqlite :: forall opts opts_. Union opts opts_ SQLiteConfigImpl => { | opts } -> Effect Connection
 sqlite opts = runEffectFn1 createClientImpl opts
 
-close :: Connection -> Aff Unit
-close = runEffectFn1 closeImpl >>> Promise.toAffE
+close :: Connection -> Effect Unit
+close = runEffectFn1 closeImpl
+
+closed :: Connection -> Effect Boolean
+closed = runEffectFn1 closedImpl
+
+protocol :: Connection -> Effect String
+protocol = runEffectFn1 protocolImpl
 
 ping :: Connection -> Aff Boolean
 ping = runEffectFn1 pingImpl >>> Promise.toAffE

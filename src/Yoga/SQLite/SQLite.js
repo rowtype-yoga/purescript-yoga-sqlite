@@ -5,10 +5,12 @@ export const createClientImpl = (config) => {
   return createClient(config);
 };
 
-// Close connection
-export const closeImpl = async (client) => {
-  client.close();
-};
+// Close connection (sync in JS API)
+export const closeImpl = (client) => { client.close(); };
+
+// Connection properties
+export const closedImpl = (client) => client.closed;
+export const protocolImpl = (client) => client.protocol;
 
 // Execute query with positional args, return full result
 export const queryImpl = async (client, sql, args) => {
@@ -18,9 +20,7 @@ export const queryImpl = async (client, sql, args) => {
     columns: result.columns,
     columnTypes: result.columnTypes ?? [],
     rowsAffected: result.rowsAffected,
-    lastInsertRowid: result.lastInsertRowid != null
-      ? Number(result.lastInsertRowid)
-      : null
+    lastInsertRowid: result.lastInsertRowid ?? null
   };
 };
 
@@ -45,9 +45,7 @@ export const querySimpleImpl = async (client, sql) => {
     columns: result.columns,
     columnTypes: result.columnTypes ?? [],
     rowsAffected: result.rowsAffected,
-    lastInsertRowid: result.lastInsertRowid != null
-      ? Number(result.lastInsertRowid)
-      : null
+    lastInsertRowid: result.lastInsertRowid ?? null
   };
 };
 
@@ -81,9 +79,7 @@ export const txQueryImpl = async (tx, sql, args) => {
     columns: result.columns,
     columnTypes: result.columnTypes ?? [],
     rowsAffected: result.rowsAffected,
-    lastInsertRowid: result.lastInsertRowid != null
-      ? Number(result.lastInsertRowid)
-      : null
+    lastInsertRowid: result.lastInsertRowid ?? null
   };
 };
 
@@ -107,7 +103,7 @@ export const txBatchImpl = async (tx, stmts) => {
     columns: r.columns,
     columnTypes: r.columnTypes ?? [],
     rowsAffected: r.rowsAffected,
-    lastInsertRowid: r.lastInsertRowid != null ? Number(r.lastInsertRowid) : null
+    lastInsertRowid: r.lastInsertRowid ?? null
   }));
 };
 
@@ -123,7 +119,7 @@ export const batchImpl = async (client, stmts, mode) => {
     columns: r.columns,
     columnTypes: r.columnTypes ?? [],
     rowsAffected: r.rowsAffected,
-    lastInsertRowid: r.lastInsertRowid != null ? Number(r.lastInsertRowid) : null
+    lastInsertRowid: r.lastInsertRowid ?? null
   }));
 };
 
@@ -146,7 +142,7 @@ export const migrateImpl = async (client, stmts) => {
     columns: r.columns,
     columnTypes: r.columnTypes ?? [],
     rowsAffected: r.rowsAffected,
-    lastInsertRowid: r.lastInsertRowid != null ? Number(r.lastInsertRowid) : null
+    lastInsertRowid: r.lastInsertRowid ?? null
   }));
 };
 

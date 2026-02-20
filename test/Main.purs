@@ -502,7 +502,7 @@ spec = before setupConn do
       rows <- runQuery conn {} (from usersTable # selectAll)
       let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
       names `shouldEqual` ["TxUser"]
-      SQLite.close conn
+      SQLite.close conn # liftEffect
 
     it "transactions rollback" \_ -> do
       conn <- withTempDb
@@ -513,7 +513,7 @@ spec = before setupConn do
       rows <- runQuery conn {} (from usersTable # selectAll)
       let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
       names `shouldEqual` []
-      SQLite.close conn
+      SQLite.close conn # liftEffect
 
     it "queryOne returns Maybe" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
@@ -596,7 +596,7 @@ spec = before setupConn do
       result <- SQLite.txQuery (SQLite.SQL "SELECT * FROM users") [] txn
       Array.length result.rows `shouldEqual` 1
       SQLite.commit txn
-      SQLite.close conn
+      SQLite.close conn # liftEffect
 
     it "txClose does not throw" \_ -> do
       conn <- withTempDb
@@ -605,7 +605,7 @@ spec = before setupConn do
       runExecuteTx txn {} (from usersTable # insert { name: "Alice", email: "a@b.com" }) # void
       SQLite.commit txn
       SQLite.txClose txn # liftEffect
-      SQLite.close conn
+      SQLite.close conn # liftEffect
 
     it "txBatch executes multiple statements in transaction" \_ -> do
       conn <- withTempDb
@@ -621,7 +621,32 @@ spec = before setupConn do
       rows <- runQuery conn {} (from usersTable # selectAll # orderBy @"id")
       let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
       names `shouldEqual` ["Alice", "Bob"]
-      SQLite.close conn
+      SQLite.close conn # liftEffect
+
+    it "txExecuteMultiple runs multi-statement SQL in transaction" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      SQLite.txExecuteMultiple "INSERT INTO users (name, email) VALUES ('Alice', 'a@b.com'); INSERT INTO users (name, email) VALUES ('Bob', 'b@c.com')" txn
+      SQLite.commit txn
+      rows <- runQuery conn {} (from usersTable # selectAll # orderBy @"id")
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice", "Bob"]
+      SQLite.close conn # liftEffect
+
+    it "closed returns false when open, true after close" \_ -> do
+      conn <- withTempDb
+      before_ <- SQLite.closed conn # liftEffect
+      before_ `shouldEqual` false
+      SQLite.close conn # liftEffect
+      after_ <- SQLite.closed conn # liftEffect
+      after_ `shouldEqual` true
+
+    it "protocol returns file for file-backed DB" \_ -> do
+      conn <- withTempDb
+      p <- SQLite.protocol conn # liftEffect
+      p `shouldEqual` "file"
+      SQLite.close conn # liftEffect
 
   describe "DDL RANDOM ROWID" do
     it "generates DDL with RANDOM ROWID suffix" \_ -> do
@@ -650,7 +675,7 @@ withLibSql :: (SQLite.Connection -> Aff Unit) -> Aff Unit
 withLibSql test = do
   conn <- SQLite.sqlite { url: libsqlUrl } # liftEffect
   test conn
-  SQLite.close conn
+  SQLite.close conn # liftEffect
 
 libsqlSpec :: Spec Unit
 libsqlSpec = around withLibSql do
