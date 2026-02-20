@@ -78,6 +78,9 @@ data ForeignKey table references col a
 data DefaultExpr :: Symbol -> Type -> Type
 data DefaultExpr expr a
 
+data RandomRowId :: Type -> Type
+data RandomRowId a
+
 -- Internal: used by LEFT JOIN to mark columns as nullable
 data Nullable :: Type -> Type
 data Nullable a
@@ -199,6 +202,30 @@ vector32 nums = "vector32('[" <> intercalate ", " (map show nums) <> "]')"
 instance ReadForeign (F32Vector dim) where
   readImpl = pure <<< F32Vector
 
+instance SQLite.ToSQLiteValue (F32Vector dim) where
+  toSQLiteValue (F32Vector f) = unsafeCoerce f
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- F64Vector: Turso F64_BLOB vector column (dim is a Symbol like "3", "768")
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+newtype F64Vector :: Symbol -> Type
+newtype F64Vector dim = F64Vector Foreign
+
+derive instance Newtype (F64Vector dim) _
+
+f64Vector :: forall @dim. Array Number -> F64Vector dim
+f64Vector arr = F64Vector (SQLite.f64VectorFromArray arr)
+
+unF64Vector :: forall dim. F64Vector dim -> Array Number
+unF64Vector (F64Vector buf) = SQLite.f64VectorToArray buf
+
+instance ReadForeign (F64Vector dim) where
+  readImpl = pure <<< F64Vector
+
+instance SQLite.ToSQLiteValue (F64Vector dim) where
+  toSQLiteValue (F64Vector f) = unsafeCoerce f
+
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Nullability: inferred from Maybe
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -224,6 +251,7 @@ else instance ExtractType a typ => ExtractType (Unique a) typ
 else instance ExtractType a typ => ExtractType (Default val a) typ
 else instance ExtractType a typ => ExtractType (DefaultExpr expr a) typ
 else instance ExtractType a typ => ExtractType (ForeignKey t r c a) typ
+else instance ExtractType a typ => ExtractType (RandomRowId a) typ
 else instance ExtractType a typ => ExtractType (Nullable a) (Maybe typ)
 else instance ExtractType a a
 
@@ -269,6 +297,9 @@ instance SQLiteTypeName Json where
 
 instance IsSymbol dim => SQLiteTypeName (F32Vector dim) where
   sqliteTypeName _ = "F32_BLOB(" <> reflectSymbol (Proxy :: Proxy dim) <> ")"
+
+instance IsSymbol dim => SQLiteTypeName (F64Vector dim) where
+  sqliteTypeName _ = "F64_BLOB(" <> reflectSymbol (Proxy :: Proxy dim) <> ")"
 
 instance SQLiteTypeName a => SQLiteTypeName (Maybe a) where
   sqliteTypeName _ = sqliteTypeName (Proxy :: Proxy a)
@@ -317,6 +348,9 @@ else instance (IsSymbol table, IsSymbol col, RenderConstraint a) => RenderConstr
     ("REFERENCES " <> reflectSymbol (Proxy :: Proxy table) <> "(" <> reflectSymbol (Proxy :: Proxy col) <> ")")
     (renderConstraint (Proxy :: Proxy a))
 
+else instance RenderConstraint a => RenderConstraint (RandomRowId a) where
+  renderConstraint _ = renderConstraint (Proxy :: Proxy a)
+
 else instance RenderConstraint a => RenderConstraint (Nullable a) where
   renderConstraint _ = renderConstraint (Proxy :: Proxy a)
 
@@ -349,10 +383,48 @@ else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (DefaultExpr e a)
   hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
 else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (ForeignKey t r c a) where
   hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
+else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (RandomRowId a) where
+  hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
 else instance HasAutoIncrementCheck a => HasAutoIncrementCheck (Nullable a) where
   hasAutoIncrement _ = hasAutoIncrement (Proxy :: Proxy a)
 else instance HasAutoIncrementCheck a where
   hasAutoIncrement _ = false
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- HasRandomRowId: detect RandomRowId through wrappers
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class HasRandomRowIdCheck a where
+  hasRandomRowId :: Proxy a -> Boolean
+
+instance HasRandomRowIdCheck (RandomRowId a) where
+  hasRandomRowId _ = true
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (PrimaryKey a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (AutoIncrement a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (Unique a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (Default v a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (DefaultExpr e a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (ForeignKey t r c a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a => HasRandomRowIdCheck (Nullable a) where
+  hasRandomRowId _ = hasRandomRowId (Proxy :: Proxy a)
+else instance HasRandomRowIdCheck a where
+  hasRandomRowId _ = false
+
+class HasRandomRowIdRL :: RL.RowList Type -> Constraint
+class HasRandomRowIdRL rl where
+  hasRandomRowIdRL :: Proxy rl -> Boolean
+
+instance HasRandomRowIdRL RL.Nil where
+  hasRandomRowIdRL _ = false
+
+instance (HasRandomRowIdCheck entry, HasRandomRowIdRL tail) => HasRandomRowIdRL (RL.Cons name entry tail) where
+  hasRandomRowIdRL _ = hasRandomRowId (Proxy :: Proxy entry) || hasRandomRowIdRL (Proxy :: Proxy tail)
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- DDL generation
@@ -392,12 +464,14 @@ instance
   ( IsSymbol name
   , RowToList cols rl
   , RenderColumnsRL rl
+  , HasRandomRowIdRL rl
   ) =>
   CreateTableDDL (Table name cols) where
   createTableDDL = do
     let tableName = reflectSymbol (Proxy :: Proxy name)
     let columns = renderColumnsRL (Proxy :: Proxy rl)
-    "CREATE TABLE " <> tableName <> " (" <> intercalate ", " columns <> ")"
+    let suffix = if hasRandomRowIdRL (Proxy :: Proxy rl) then " RANDOM ROWID" else ""
+    "CREATE TABLE " <> tableName <> " (" <> intercalate ", " columns <> ")" <> suffix
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Turso DDL helpers: vector and FTS index creation
@@ -447,6 +521,8 @@ else instance IsAutoGenerated a => IsAutoGenerated (PrimaryKey a) where
 else instance IsAutoGenerated a => IsAutoGenerated (Unique a) where
   isAutoGenerated _ = isAutoGenerated (Proxy :: Proxy a)
 else instance IsAutoGenerated a => IsAutoGenerated (ForeignKey t r c a) where
+  isAutoGenerated _ = isAutoGenerated (Proxy :: Proxy a)
+else instance IsAutoGenerated a => IsAutoGenerated (RandomRowId a) where
   isAutoGenerated _ = isAutoGenerated (Proxy :: Proxy a)
 else instance IsAutoGenerated a => IsAutoGenerated (Nullable a) where
   isAutoGenerated _ = isAutoGenerated (Proxy :: Proxy a)
@@ -1247,6 +1323,8 @@ instance AggregateReturnTypeV "vector_extract" argType String
 else instance AggregateReturnTypeV "VECTOR_EXTRACT" argType String
 else instance AggregateReturnTypeV "vector_distance_cos" argType Number
 else instance AggregateReturnTypeV "VECTOR_DISTANCE_COS" argType Number
+else instance AggregateReturnTypeV "vector_distance_l2" argType Number
+else instance AggregateReturnTypeV "VECTOR_DISTANCE_L2" argType Number
 else instance
   Fail (Beside (Text "Unknown function: ") (Quote funcName)) =>
   AggregateReturnTypeV funcName argType returnType
@@ -1909,6 +1987,8 @@ else instance FlushWhereWordV "vector_extract" currentType tables paramsIn Strin
 else instance FlushWhereWordV "VECTOR_EXTRACT" currentType tables paramsIn String paramsIn
 else instance FlushWhereWordV "vector_distance_cos" currentType tables paramsIn Number paramsIn
 else instance FlushWhereWordV "VECTOR_DISTANCE_COS" currentType tables paramsIn Number paramsIn
+else instance FlushWhereWordV "vector_distance_l2" currentType tables paramsIn Number paramsIn
+else instance FlushWhereWordV "VECTOR_DISTANCE_L2" currentType tables paramsIn Number paramsIn
 else instance
   ( ResolveColumn word tables entry
   , ExtractType entry typ
@@ -1949,6 +2029,8 @@ class IsMultiArgFunc funcName isMultiArg returnType | funcName -> isMultiArg ret
 
 instance IsMultiArgFunc "vector_distance_cos" True Number
 else instance IsMultiArgFunc "VECTOR_DISTANCE_COS" True Number
+else instance IsMultiArgFunc "vector_distance_l2" True Number
+else instance IsMultiArgFunc "VECTOR_DISTANCE_L2" True Number
 else instance IsMultiArgFunc "vector_extract" True String
 else instance IsMultiArgFunc "VECTOR_EXTRACT" True String
 else instance IsMultiArgFunc "fts_score" True Number

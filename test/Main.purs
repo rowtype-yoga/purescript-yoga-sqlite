@@ -7,6 +7,7 @@ import Data.DateTime (DateTime(..))
 import Data.Enum (toEnum)
 import Data.Maybe (Maybe(..), fromJust)
 import Data.Newtype (un)
+import Data.Array as Array
 import Data.Tuple.Nested ((/\))
 import Data.Time (Time(..))
 import Effect (Effect)
@@ -94,6 +95,20 @@ type VDocsTable = Table "vdocs"
 
 vDocsTable :: Proxy VDocsTable
 vDocsTable = Proxy
+
+type F64DocsTable = Table "f64docs"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , title :: String
+  , embedding :: F64Vector "3"
+  )
+
+f64DocsTable :: Proxy F64DocsTable
+f64DocsTable = Proxy
+
+type RandomRowIdTable = Table "things"
+  ( id :: Int # PrimaryKey # AutoIncrement # RandomRowId
+  , name :: String
+  )
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Type annotations prove correctness at compile time
@@ -271,6 +286,17 @@ typedWhereVectorDist
 typedWhereVectorDist = from vDocsTable
   # selectAll
   # where_ @"vector_distance_cos(emb, $probe) < $maxDist"
+
+typedWhereVectorDistL2
+  :: Q _ _ (probe :: F32Vector "3", maxDist :: Number) _
+typedWhereVectorDistL2 = from vDocsTable
+  # selectAll
+  # where_ @"vector_distance_l2(emb, $probe) < $maxDist"
+
+typedSelectVectorDistL2
+  :: Q _ (title :: String, dist :: Number) (probe :: F32Vector "3") _
+typedSelectVectorDistL2 = from vDocsTable
+  # select @"title, vector_distance_l2(emb, $probe) AS dist"
 
 typedWhereFtsScore
   :: Q _ _ (query :: String, minScore :: Number) _
@@ -525,6 +551,93 @@ spec = before setupConn do
       rows <- runQuery conn {} (from documentsTable # selectAll)
       let result = map (\r -> unF32Vector r.embedding) (rows :: Array { id :: Int, title :: String, body :: String, embedding :: F32Vector "3" })
       result `shouldEqual` [[1.0, 2.0, 3.0]]
+
+    it "F64Vector round-trip" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @F64DocsTable)) conn # void
+      let vec = f64Vector @"3" [1.0, 2.0, 3.0]
+      runExecute conn {} (from f64DocsTable # insert { title: "test", embedding: vec }) # void
+      rows <- runQuery conn {} (from f64DocsTable # selectAll)
+      let result = map (\r -> unF64Vector r.embedding) (rows :: Array { id :: Int, title :: String, embedding :: F64Vector "3" })
+      result `shouldEqual` [[1.0, 2.0, 3.0]]
+
+    it "columnTypes populated after query" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@b.com", age: Just 30 }) # void
+      result <- SQLite.querySimple (SQLite.SQL "SELECT * FROM users") conn
+      Array.length result.columnTypes `shouldEqual` Array.length result.columns
+
+    it "batch inserts atomically" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      results <- SQLite.batch SQLite.Write
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Alice", "a@b.com"] }
+        , { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Bob", "b@c.com"] }
+        ]
+        conn
+      Array.length results `shouldEqual` 2
+      rows <- runQuery conn {} (from usersTable # selectAll # orderBy @"id")
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice", "Bob"]
+
+    it "executeMultiple with multi-statement SQL" \conn -> do
+      SQLite.executeMultiple
+        ( createTableDDL @UsersTable <> "; INSERT INTO users (name, email) VALUES ('Alice', 'a@b.com'); INSERT INTO users (name, email) VALUES ('Bob', 'b@c.com')"
+        )
+        conn
+      rows <- runQuery conn {} (from usersTable # selectAll # orderBy @"id")
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice", "Bob"]
+
+    it "beginWithMode Read succeeds for read-only queries" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@b.com" }) # void
+      txn <- SQLite.beginWithMode SQLite.Read conn
+      result <- SQLite.txQuery (SQLite.SQL "SELECT * FROM users") [] txn
+      Array.length result.rows `shouldEqual` 1
+      SQLite.commit txn
+      SQLite.close conn
+
+    it "txClose does not throw" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      runExecuteTx txn {} (from usersTable # insert { name: "Alice", email: "a@b.com" }) # void
+      SQLite.commit txn
+      SQLite.txClose txn # liftEffect
+      SQLite.close conn
+
+    it "txBatch executes multiple statements in transaction" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      results <- SQLite.txBatch
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Alice", "a@b.com"] }
+        , { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Bob", "b@c.com"] }
+        ]
+        txn
+      SQLite.commit txn
+      Array.length results `shouldEqual` 2
+      rows <- runQuery conn {} (from usersTable # selectAll # orderBy @"id")
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice", "Bob"]
+      SQLite.close conn
+
+  describe "DDL RANDOM ROWID" do
+    it "generates DDL with RANDOM ROWID suffix" \_ -> do
+      let result = createTableDDL @RandomRowIdTable
+      result `shouldEqual` "CREATE TABLE things (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL) RANDOM ROWID"
+
+  describe "DDL F64Vector" do
+    it "createTableDDL with F64Vector" \_ -> do
+      let result = createTableDDL @F64DocsTable
+      result `shouldEqual` "CREATE TABLE f64docs (embedding F64_BLOB(3) NOT NULL, id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL)"
+
+  describe "Type-level vector_distance_l2" do
+    it "where_ with vector_distance_l2 multi-arg" \_ -> do
+      toSQL typedWhereVectorDistL2 `shouldEqual` "SELECT * FROM vdocs WHERE vector_distance_l2(emb, $probe) < $maxDist"
+
+    it "select with vector_distance_l2 alias" \_ -> do
+      toSQL typedSelectVectorDistL2 `shouldEqual` "SELECT title, vector_distance_l2(emb, $probe) AS dist FROM vdocs"
 
 composeFile :: Docker.ComposeFile
 composeFile = Docker.ComposeFile "docker-compose.test.yml"
