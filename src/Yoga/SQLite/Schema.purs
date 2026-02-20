@@ -43,7 +43,7 @@ import Prim.TypeError (class Fail, Beside, Text, Quote)
 import Record (get) as Record
 import Type.Proxy (Proxy(..))
 import Type.RowList (class ListToRow)
-import Yoga.JSON (class ReadForeign, readImpl)
+import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify)
 import Yoga.SQLite.SQLite as SQLite
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -241,7 +241,7 @@ instance SQLite.ToSQLiteValue SQLUUID where
   toSQLiteValue (SQLUUID uuid) = unsafeCoerce uuid
 
 instance SQLite.ToSQLiteValue Json where
-  toSQLiteValue (Json f) = unsafeCoerce f
+  toSQLiteValue (Json f) = unsafeCoerce (unsafeStringify f)
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Nullability: inferred from Maybe
@@ -2892,6 +2892,8 @@ else instance FieldToSQLiteValue Boolean where
   fieldToSQLiteValue b = unsafeCoerce (if b then 1 else 0)
 else instance FieldToSQLiteValue SQLiteBool where
   fieldToSQLiteValue (SQLiteBool b) = unsafeCoerce (if b then 1 else 0)
+else instance FieldToSQLiteValue Json where
+  fieldToSQLiteValue (Json f) = unsafeCoerce (unsafeStringify f)
 else instance FieldToSQLiteValue a where
   fieldToSQLiteValue = unsafeCoerce
 

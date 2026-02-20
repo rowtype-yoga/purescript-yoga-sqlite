@@ -5,8 +5,9 @@ import Prelude
 import Data.Date (canonicalDate)
 import Data.DateTime (DateTime(..))
 import Data.Enum (toEnum)
+import Data.UUID as UUID
 import JS.BigInt as JS.BigInt
-import Data.Maybe (Maybe(..), fromJust)
+import Data.Maybe (Maybe(..), fromJust, isNothing)
 import Data.Newtype (un)
 import Data.Array as Array
 import Data.Tuple.Nested ((/\))
@@ -15,6 +16,7 @@ import Effect (Effect)
 import Data.Time.Duration (Seconds(..), fromDuration)
 import Effect.Aff (Aff, bracket, launchAff_)
 import Effect.Class (liftEffect)
+import Foreign (unsafeToForeign)
 import Partial.Unsafe (unsafePartial)
 import Prim.Boolean (True)
 import Test.Spec (Spec, around, before, describe, it)
@@ -110,6 +112,26 @@ f64DocsTable = Proxy
 type RandomRowIdTable = Table "things"
   ( id :: Int # PrimaryKey # RandomRowId
   , name :: String
+  )
+
+type DateTimeTable = Table "datetimes"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , date_col :: SQLDate
+  , time_col :: SQLTime
+  , dt_col :: DateTime
+  )
+
+type UuidTable = Table "uuids"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , uuid_col :: SQLUUID
+  )
+
+type NullableEverythingTable = Table "nullable_everything"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , name :: Maybe String
+  , age :: Maybe Int
+  , score :: Maybe Number
+  , active :: Maybe SQLiteBool
   )
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -351,15 +373,18 @@ typedWhereVectorDistL2Upper = from vDocsTable
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 testDateTime :: DateTime
-testDateTime = unsafePartial do
-  let year = fromJust (toEnum 2025)
-  let month = fromJust (toEnum 1)
-  let day = fromJust (toEnum 15)
-  let h = fromJust (toEnum 12)
-  let mi = fromJust (toEnum 0)
-  let s = fromJust (toEnum 0)
+testDateTime = mkDateTime 2025 1 15 12 0 0
+
+mkDateTime :: Int -> Int -> Int -> Int -> Int -> Int -> DateTime
+mkDateTime y m d h mi s = unsafePartial do
+  let year = fromJust (toEnum y)
+  let month = fromJust (toEnum m)
+  let day = fromJust (toEnum d)
+  let hour = fromJust (toEnum h)
+  let minute = fromJust (toEnum mi)
+  let second = fromJust (toEnum s)
   let ms = fromJust (toEnum 0)
-  DateTime (canonicalDate year month day) (Time h mi s ms)
+  DateTime (canonicalDate year month day) (Time hour minute second ms)
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Spec
@@ -941,6 +966,258 @@ spec = before setupConn do
         ]
       let lengths = map Array.length (results :: Array (Array { id :: Int, name :: String, email :: String, age :: Maybe Int }))
       lengths `shouldEqual` [1, 1]
+
+  describe "More evil edge cases" do
+    it "MAX_SAFE_INTEGER round-trips as Number" \conn -> do
+      SQLite.executeSimple (SQLite.SQL "CREATE TABLE bigints (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)") conn # void
+      SQLite.execute (SQLite.SQL "INSERT INTO bigints (val) VALUES (?1)") [SQLite.toSQLiteValue 9007199254740991.0] conn # void
+      result <- SQLite.query (SQLite.SQL "SELECT val FROM bigints") [] conn
+      Array.length result.rows `shouldEqual` 1
+
+    it "zero and negative zero as Number" \conn -> do
+      SQLite.executeSimple (SQLite.SQL "CREATE TABLE nums (id INTEGER PRIMARY KEY, val REAL NOT NULL)") conn # void
+      SQLite.execute (SQLite.SQL "INSERT INTO nums (val) VALUES (?1)") [SQLite.toSQLiteValue 0.0] conn # void
+      SQLite.execute (SQLite.SQL "INSERT INTO nums (val) VALUES (?1)") [SQLite.toSQLiteValue (-0.0)] conn # void
+      result <- SQLite.query (SQLite.SQL "SELECT val FROM nums") [] conn
+      Array.length result.rows `shouldEqual` 2
+
+    it "very long string round-trips" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      let longStr = Array.foldl (<>) "" (Array.replicate 10000 "abcdefghij")
+      runExecute conn {} (from usersTable # insert { name: longStr, email: "l@l.com" }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` [longStr]
+
+    it "null byte in string" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      let nullStr = "before\x0000after"
+      runExecute conn {} (from usersTable # insert { name: nullStr, email: "null@b.com" }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      Array.length rows `shouldEqual` 1
+
+    it "backslash and double quotes in strings" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      let val = "back\\slash \"quoted\" end"
+      runExecute conn {} (from usersTable # insert { name: val, email: "q@q.com" }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` [val]
+
+    it "SQLiteBool reads non-0/1 integers as true" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
+      SQLite.execute (SQLite.SQL "INSERT INTO config (active) VALUES (42)") [] conn # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy ConfigTable) # selectAll)
+      let actives = map (_.active) (rows :: Array { id :: Int, active :: SQLiteBool, role :: String, score :: Int })
+      actives `shouldEqual` [SQLiteBool true]
+
+    it "SELECT from empty table returns empty array" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int }) `shouldEqual` []
+
+    it "UPDATE zero rows returns 0" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      n <- SQLite.execute (SQLite.SQL "UPDATE users SET name = 'x' WHERE id = 999") [] conn
+      n `shouldEqual` 0
+
+    it "DELETE zero rows returns 0" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      n <- SQLite.execute (SQLite.SQL "DELETE FROM users WHERE id = 999") [] conn
+      n `shouldEqual` 0
+
+    it "queryOne on empty result returns Nothing" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      row <- SQLite.queryOne (SQLite.SQL "SELECT * FROM users WHERE id = 999") [] conn
+      isNothing row `shouldEqual` true
+
+    it "multiple sequential transactions on same connection" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn1 <- SQLite.begin conn
+      SQLite.txExecute (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["A", "a@a.com"]) txn1 # void
+      SQLite.commit txn1
+      txn2 <- SQLite.begin conn
+      SQLite.txExecute (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["B", "b@b.com"]) txn2 # void
+      SQLite.commit txn2
+      result <- SQLite.query (SQLite.SQL "SELECT COUNT(*) as cnt FROM users") [] conn
+      Array.length result.rows `shouldEqual` 1
+      SQLite.close conn # liftEffect
+
+    it "re-using rolled-back transaction throws" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      SQLite.rollback txn
+      expectError $ SQLite.txExecute (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["Ghost", "g@g.com"]) txn
+      SQLite.close conn # liftEffect
+
+    it "ping returns true for open connection" \conn -> do
+      result <- SQLite.ping conn
+      result `shouldEqual` true
+
+    it "ping returns false after close" \_ -> do
+      conn <- withTempDb
+      SQLite.close conn # liftEffect
+      result <- SQLite.ping conn
+      result `shouldEqual` false
+
+    it "SQLDate round-trip" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @DateTimeTable)) conn # void
+      let date = unsafePartial do
+            let year = fromJust (toEnum 2024)
+            let month = fromJust (toEnum 3)
+            let day = fromJust (toEnum 15)
+            SQLDate (canonicalDate year month day)
+      let time = unsafePartial do
+            let h = fromJust (toEnum 10)
+            let mi = fromJust (toEnum 30)
+            let s = fromJust (toEnum 45)
+            let ms = fromJust (toEnum 0)
+            SQLTime (Time h mi s ms)
+      let dt = mkDateTime 2024 3 15 10 30 45
+      runExecute conn {} (from (Proxy :: Proxy DateTimeTable) # insert { date_col: date, time_col: time, dt_col: dt }) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy DateTimeTable) # select @"date_col, time_col")
+      let row = rows :: Array { date_col :: SQLDate, time_col :: SQLTime }
+      map (_.date_col) row `shouldEqual` [date]
+      map (_.time_col) row `shouldEqual` [time]
+
+    it "SQLUUID round-trip" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UuidTable)) conn # void
+      uuid <- UUID.genUUID # liftEffect
+      let sqluuid = SQLUUID uuid
+      runExecute conn {} (from (Proxy :: Proxy UuidTable) # insert { uuid_col: sqluuid }) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy UuidTable) # select @"uuid_col")
+      let uuids = map (_.uuid_col) (rows :: Array { uuid_col :: SQLUUID })
+      uuids `shouldEqual` [sqluuid]
+
+    it "multiple UNIQUE violations in batch all fail atomically" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com" }) # void
+      expectError $ SQLite.batch SQLite.Write
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Bob", "a@a.com"] }
+        , { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Carol", "a@a.com"] }
+        ]
+        conn
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      Array.length (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int }) `shouldEqual` 1
+
+    it "all nullable columns NULL then non-NULL" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @NullableEverythingTable)) conn # void
+      runExecute conn {} (from (Proxy :: Proxy NullableEverythingTable) # insert {}) # void
+      runExecute conn {} (from (Proxy :: Proxy NullableEverythingTable) # insert
+        { name: Just "hello", age: Just 25, score: Just 3.14, active: Just (SQLiteBool true) }) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy NullableEverythingTable) # selectAll # orderBy @"id")
+      let r = rows :: Array { id :: Int, name :: Maybe String, age :: Maybe Int, score :: Maybe Number, active :: Maybe SQLiteBool }
+      map (_.name) r `shouldEqual` [Nothing, Just "hello"]
+      map (_.active) r `shouldEqual` [Nothing, Just (SQLiteBool true)]
+
+    it "executeMultiple with empty string is no-op" \conn -> do
+      SQLite.executeMultiple "" conn
+
+    it "executeMultiple with only comments" \conn -> do
+      SQLite.executeMultiple "-- this is a comment\n-- another comment" conn
+
+    it "BigInt toSQLiteValue round-trips" \_ -> do
+      conn <- liftEffect $ SQLite.sqlite { url: ":memory:", intMode: "bigint" }
+      SQLite.executeSimple (SQLite.SQL "CREATE TABLE bigint_test (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)") conn # void
+      let big = unsafePartial $ fromJust $ JS.BigInt.fromString "9007199254740993"
+      SQLite.execute (SQLite.SQL "INSERT INTO bigint_test (val) VALUES (?1)") [SQLite.toSQLiteValue big] conn # void
+      result <- SQLite.query (SQLite.SQL "SELECT val FROM bigint_test") [] conn
+      Array.length result.rows `shouldEqual` 1
+      SQLite.close conn # liftEffect
+
+    it "insert then select with WHERE on multiple columns" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com", age: Just 30 }) # void
+      runExecute conn {} (from usersTable # insert { name: "Bob", email: "b@b.com", age: Just 30 }) # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a2@a.com", age: Just 25 }) # void
+      rows <- runQuery conn { name: "Alice", age: 30 }
+        (from usersTable # selectAll # where_ @"name = $name AND age = $age")
+      let emails = map (_.email) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      emails `shouldEqual` ["a@a.com"]
+
+    it "batch with 100 inserts" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      let stmts = Array.range 1 100 <#> \i ->
+            { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)"
+            , args: map SQLite.toSQLiteValue ["user" <> show i, "u" <> show i <> "@test.com"]
+            }
+      results <- SQLite.batch SQLite.Write stmts conn
+      Array.length results `shouldEqual` 100
+      countResult <- SQLite.query (SQLite.SQL "SELECT COUNT(*) as cnt FROM users") [] conn
+      Array.length countResult.rows `shouldEqual` 1
+
+    it "insert DEFAULT VALUES with RETURNING" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
+      result <- SQLite.query (SQLite.SQL "INSERT INTO config DEFAULT VALUES RETURNING *") [] conn
+      Array.length result.rows `shouldEqual` 1
+      Array.length result.columns `shouldSatisfy` (_ > 0)
+
+    it "F32Vector zero vector round-trips" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @DocumentsTable)) conn # void
+      let zeroVec = f32Vector @"3" [0.0, 0.0, 0.0]
+      runExecute conn {} (from documentsTable # insert { title: "zero", body: "none", embedding: zeroVec }) # void
+      rows <- runQuery conn {} (from documentsTable # select @"title, embedding")
+      let embs = map (\r -> unF32Vector r.embedding) (rows :: Array { title :: String, embedding :: F32Vector "3" })
+      embs `shouldEqual` [[0.0, 0.0, 0.0]]
+
+    it "F32Vector precision loss from Float64 to Float32" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @DocumentsTable)) conn # void
+      let preciseVec = f32Vector @"3" [1.0000001, 2.0000002, 3.0000003]
+      runExecute conn {} (from documentsTable # insert { title: "precise", body: "none", embedding: preciseVec }) # void
+      rows <- runQuery conn {} (from documentsTable # select @"title, embedding")
+      let embs = map (\r -> unF32Vector r.embedding) (rows :: Array { title :: String, embedding :: F32Vector "3" })
+      let roundTripped = unsafePartial $ fromJust $ Array.head embs
+      roundTripped `shouldSatisfy` \v -> v /= [1.0000001, 2.0000002, 3.0000003]
+
+    it "write transaction blocks second write transaction" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.beginWithMode SQLite.Write conn
+      expectError $ SQLite.beginWithMode SQLite.Write conn
+      SQLite.rollback txn
+      SQLite.close conn # liftEffect
+
+    it "read transaction allows concurrent read transaction" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn1 <- SQLite.beginWithMode SQLite.Read conn
+      txn2 <- SQLite.beginWithMode SQLite.Read conn
+      _ <- SQLite.txQuery (SQLite.SQL "SELECT * FROM users") [] txn1
+      _ <- SQLite.txQuery (SQLite.SQL "SELECT * FROM users") [] txn2
+      SQLite.commit txn1
+      SQLite.commit txn2
+      SQLite.close conn # liftEffect
+
+    it "DateTime round-trip preserves value" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @EventsTable)) conn # void
+      let dt = mkDateTime 2024 6 15 14 30 0
+      runExecute conn {} (from eventsTable # insert { title: "test", metadata: Json (unsafeToForeign {}), created_at: dt }) # void
+      rows <- runQuery conn {} (from eventsTable # select @"created_at")
+      let dts = map (_.created_at) (rows :: Array { created_at :: DateTime })
+      dts `shouldEqual` [dt]
+
+    it "Json round-trip with nested object" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @EventsTable)) conn # void
+      let obj = unsafeToForeign { key: "value", nested: { a: 1 } }
+      runExecute conn {} (from eventsTable # insert { title: "test", metadata: Json obj, created_at: mkDateTime 2024 1 1 0 0 0 }) # void
+      rows <- runQuery conn {} (from eventsTable # select @"metadata")
+      Array.length (rows :: Array { metadata :: Json }) `shouldEqual` 1
+
+    it "onConflictDoNothing does not insert duplicate" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com" }) # void
+      runExecute conn {} (from usersTable # insert { name: "Alice2", email: "a@a.com" } # onConflictDoNothing @"email") # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice"]
+
+    it "onConflictDoNothing returns 0 rowsAffected on conflict" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com" }) # void
+      n <- runExecute conn {} (from usersTable # insert { name: "Alice2", email: "a@a.com" } # onConflictDoNothing @"email")
+      n `shouldEqual` 0
 
 composeFile :: Docker.ComposeFile
 composeFile = Docker.ComposeFile "docker-compose.test.yml"
