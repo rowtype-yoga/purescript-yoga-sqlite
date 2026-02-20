@@ -95,6 +95,7 @@ export const txExecuteImpl = async (tx, sql, args) => {
 };
 
 export const txCloseImpl = (tx) => { tx.close(); };
+export const txClosedImpl = (tx) => tx.closed;
 
 export const txBatchImpl = async (tx, stmts) => {
   const results = await tx.batch(stmts.map(s => ({ sql: s.sql, args: s.args })));

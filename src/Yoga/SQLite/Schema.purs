@@ -226,6 +226,23 @@ instance ReadForeign (F64Vector dim) where
 instance SQLite.ToSQLiteValue (F64Vector dim) where
   toSQLiteValue (F64Vector f) = unsafeCoerce f
 
+instance SQLite.ToSQLiteValue SQLiteBool where
+  toSQLiteValue (SQLiteBool b) = unsafeCoerce (if b then 1 else 0)
+
+instance SQLite.ToSQLiteValue SQLDate where
+  toSQLiteValue (SQLDate d) = unsafeCoerce (SCU.take 10 (SQLite.dateTimeToString (JSDate.fromDateTime (DateTime d bottom))))
+
+instance SQLite.ToSQLiteValue SQLTime where
+  toSQLiteValue (SQLTime t) = unsafeCoerce (pad (fromEnum (hour t)) <> ":" <> pad (fromEnum (minute t)) <> ":" <> pad (fromEnum (second t)))
+    where
+    pad n = if n < 10 then "0" <> show n else show n
+
+instance SQLite.ToSQLiteValue SQLUUID where
+  toSQLiteValue (SQLUUID uuid) = unsafeCoerce uuid
+
+instance SQLite.ToSQLiteValue Json where
+  toSQLiteValue (Json f) = unsafeCoerce f
+
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Nullability: inferred from Maybe
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -2,9 +2,9 @@ module Yoga.SQLite.SQLite where
 
 import Prelude
 
-import Data.Maybe (Maybe)
+import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
-import Data.Nullable (Nullable)
+import Data.Nullable (Nullable, toNullable)
 import Data.Nullable as Nullable
 import Data.JSDate as JSDate
 import Effect (Effect)
@@ -56,6 +56,11 @@ instance ToSQLiteValue BigInt where
 
 instance ToSQLiteValue Boolean where
   toSQLiteValue = unsafeCoerce
+
+instance ToSQLiteValue a => ToSQLiteValue (Maybe a) where
+  toSQLiteValue = case _ of
+    Nothing -> unsafeCoerce (toNullable Nothing)
+    Just v -> toSQLiteValue v
 
 instance ToSQLiteValue Foreign where
   toSQLiteValue = unsafeCoerce
@@ -137,6 +142,7 @@ foreign import txQueryOneImpl :: EffectFn3 Transaction String (Array SQLiteValue
 foreign import txExecuteImpl :: EffectFn3 Transaction String (Array SQLiteValue) (Promise Int)
 
 foreign import txCloseImpl :: EffectFn1 Transaction Unit
+foreign import txClosedImpl :: EffectFn1 Transaction Boolean
 foreign import txBatchImpl :: EffectFn2 Transaction (Array BatchStatement) (Promise (Array QueryResultImpl))
 foreign import txExecuteMultipleImpl :: EffectFn2 Transaction String (Promise Unit)
 
@@ -276,6 +282,9 @@ txExecute (SQL sql) args txn =
 
 txClose :: Transaction -> Effect Unit
 txClose = runEffectFn1 txCloseImpl
+
+txClosed :: Transaction -> Effect Boolean
+txClosed = runEffectFn1 txClosedImpl
 
 txBatch :: Array BatchStatement -> Transaction -> Aff (Array QueryResult)
 txBatch stmts txn =

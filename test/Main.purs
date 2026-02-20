@@ -648,6 +648,44 @@ spec = before setupConn do
       p `shouldEqual` "file"
       SQLite.close conn # liftEffect
 
+    it "empty batch returns empty array" \conn -> do
+      results <- SQLite.batch SQLite.Write [] conn
+      Array.length results `shouldEqual` 0
+
+    it "txClosed reflects transaction state" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      before_ <- SQLite.txClosed txn # liftEffect
+      before_ `shouldEqual` false
+      SQLite.commit txn
+      after_ <- SQLite.txClosed txn # liftEffect
+      after_ `shouldEqual` true
+      SQLite.close conn # liftEffect
+
+    it "Maybe SQLiteValue passes null for Nothing" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      SQLite.execute
+        (SQLite.SQL "INSERT INTO users (name, email, age) VALUES (?1, ?2, ?3)")
+        [ SQLite.toSQLiteValue "Alice"
+        , SQLite.toSQLiteValue "a@b.com"
+        , SQLite.toSQLiteValue (Nothing :: Maybe Int)
+        ]
+        conn # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let ages = map (_.age) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      ages `shouldEqual` [Nothing]
+
+    it "SQLiteBool as SQLiteValue" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
+      SQLite.execute
+        (SQLite.SQL "INSERT INTO config (active) VALUES (?1)")
+        [ SQLite.toSQLiteValue (SQLiteBool false) ]
+        conn # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy ConfigTable) # selectAll)
+      let actives = map (\r -> r.active) (rows :: Array { id :: Int, active :: SQLiteBool, role :: String, score :: Int })
+      actives `shouldEqual` [SQLiteBool false]
+
   describe "DDL RANDOM ROWID" do
     it "generates DDL with RANDOM ROWID suffix" \_ -> do
       let result = createTableDDL @RandomRowIdTable
