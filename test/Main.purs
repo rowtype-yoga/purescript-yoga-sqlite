@@ -5,6 +5,7 @@ import Prelude
 import Data.Date (canonicalDate)
 import Data.DateTime (DateTime(..))
 import Data.Enum (toEnum)
+import JS.BigInt as JS.BigInt
 import Data.Maybe (Maybe(..), fromJust)
 import Data.Newtype (un)
 import Data.Array as Array
@@ -316,6 +317,33 @@ typedFromRaw =
 typedWhereRaw
   :: Q _ _ (x :: Int) _
 typedWhereRaw = from usersTable # selectAll # whereRaw @"id IN (SELECT id FROM other)" @(x :: Int)
+
+-- F64Vector compile-time: selectAll includes F64Vector column
+typedF64DocsSelectAll
+  :: Q _
+       (embedding :: F64Vector "3", id :: Int, title :: String)
+       ()
+       _
+typedF64DocsSelectAll = from f64DocsTable # selectAll
+
+-- RandomRowId compile-time: insert excludes the id column
+typedRandomRowIdInsert
+  :: Q _ () () _
+typedRandomRowIdInsert = from (Proxy :: Proxy RandomRowIdTable) # insert { name: "test" }
+
+-- vector_distance_l2 in SELECT with alias compile-time
+typedSelectDistL2Alias
+  :: Q _ (title :: String, l2dist :: Number) (probe :: F32Vector "3") _
+typedSelectDistL2Alias = from vDocsTable
+  # select @"title, vector_distance_l2(emb, $probe) AS l2dist"
+  # where_ @"vector_distance_l2(emb, $probe) IS NOT NULL"
+
+-- VECTOR_DISTANCE_L2 uppercase variant compile-time
+typedWhereVectorDistL2Upper
+  :: Q _ _ (probe :: F32Vector "3", maxDist :: Number) _
+typedWhereVectorDistL2Upper = from vDocsTable
+  # selectAll
+  # where_ @"VECTOR_DISTANCE_L2(emb, $probe) < $maxDist"
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Helper
@@ -721,6 +749,72 @@ spec = before setupConn do
 
     it "select with vector_distance_l2 alias" \_ -> do
       toSQL typedSelectVectorDistL2 `shouldEqual` "SELECT title, vector_distance_l2(emb, $probe) AS dist FROM vdocs WHERE vector_distance_l2(emb, $probe) IS NOT NULL"
+
+    it "VECTOR_DISTANCE_L2 uppercase" \_ -> do
+      toSQL typedWhereVectorDistL2Upper `shouldEqual` "SELECT * FROM vdocs WHERE VECTOR_DISTANCE_L2(emb, $probe) < $maxDist"
+
+    it "vector_distance_l2 with custom alias" \_ -> do
+      toSQL typedSelectDistL2Alias `shouldEqual` "SELECT title, vector_distance_l2(emb, $probe) AS l2dist FROM vdocs WHERE vector_distance_l2(emb, $probe) IS NOT NULL"
+
+  describe "Compile-time golden tests" do
+    it "F64Vector in selectAll result type" \_ -> do
+      toSQL typedF64DocsSelectAll `shouldEqual` "SELECT * FROM f64docs"
+
+    it "RandomRowId insert excludes id" \_ -> do
+      toSQL typedRandomRowIdInsert `shouldEqual` "INSERT INTO things (name) VALUES (?1)"
+
+  describe "Edge cases" do
+    it "Maybe Just as SQLiteValue passes the inner value" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      SQLite.execute
+        (SQLite.SQL "INSERT INTO users (name, email, age) VALUES (?1, ?2, ?3)")
+        [ SQLite.toSQLiteValue "Alice"
+        , SQLite.toSQLiteValue "a@b.com"
+        , SQLite.toSQLiteValue (Just 42 :: Maybe Int)
+        ]
+        conn # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let ages = map (_.age) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      ages `shouldEqual` [Just 42]
+
+    it "Boolean round-trip via ToSQLiteValue uses 0/1" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
+      SQLite.execute (SQLite.SQL "INSERT INTO config (active) VALUES (?1)") [ SQLite.toSQLiteValue true ] conn # void
+      SQLite.execute (SQLite.SQL "INSERT INTO config (active) VALUES (?1)") [ SQLite.toSQLiteValue false ] conn # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy ConfigTable) # selectAll # orderBy @"id")
+      let actives = map (_.active) (rows :: Array { id :: Int, active :: SQLiteBool, role :: String, score :: Int })
+      actives `shouldEqual` [SQLiteBool true, SQLiteBool false]
+
+    it "batch with single statement" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      results <- SQLite.batch SQLite.Write
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Solo", "s@t.com"] } ]
+        conn
+      Array.length results `shouldEqual` 1
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Solo"]
+
+    it "batch with Deferred mode" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      results <- SQLite.batch SQLite.Deferred
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["A", "a@b.com"] }
+        , { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["B", "b@c.com"] }
+        ]
+        conn
+      Array.length results `shouldEqual` 2
+
+    it "lastInsertRowid is populated as BigInt" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      result <- SQLite.query (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["Alice", "a@b.com"]) conn
+      result.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 1)
+
+    it "multiple inserts produce incrementing rowids" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      r1 <- SQLite.query (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["A", "a@b.com"]) conn
+      r2 <- SQLite.query (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["B", "b@c.com"]) conn
+      r1.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 1)
+      r2.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 2)
 
 composeFile :: Docker.ComposeFile
 composeFile = Docker.ComposeFile "docker-compose.test.yml"
