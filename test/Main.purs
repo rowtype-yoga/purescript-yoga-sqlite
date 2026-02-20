@@ -18,7 +18,8 @@ import Effect.Class (liftEffect)
 import Partial.Unsafe (unsafePartial)
 import Prim.Boolean (True)
 import Test.Spec (Spec, around, before, describe, it)
-import Test.Spec.Assertions (shouldEqual)
+import Control.Parallel (parSequence)
+import Test.Spec.Assertions (shouldEqual, shouldSatisfy, expectError)
 import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Type.Function (type (#))
@@ -815,6 +816,131 @@ spec = before setupConn do
       r2 <- SQLite.query (SQLite.SQL "INSERT INTO users (name, email) VALUES (?1, ?2)") (map SQLite.toSQLiteValue ["B", "b@c.com"]) conn
       r1.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 1)
       r2.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 2)
+
+  describe "Evil edge cases" do
+    it "single quotes in string values don't corrupt SQL" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "O'Brien", email: "o@b.com" }) # void
+      rows <- runQuery conn { name: "O'Brien" } (from usersTable # selectAll # where_ @"name = $name")
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["O'Brien"]
+
+    it "empty string values round-trip" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "", email: "" }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` [""]
+
+    it "same named param used twice in WHERE" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "Alice" }) # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "other" }) # void
+      rows <- runQuery conn { val: "Alice" }
+        (from usersTable # selectAll # whereRaw @"name = $val AND email = $val" @(val :: String))
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice"]
+
+    it "rollback undoes batch in transaction" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      SQLite.txBatch
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["A", "a@b.com"] }
+        , { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["B", "b@c.com"] }
+        ]
+        txn # void
+      SQLite.rollback txn
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` []
+      SQLite.close conn # liftEffect
+
+    it "batch fails atomically on constraint violation" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@b.com" }) # void
+      expectError $ SQLite.batch SQLite.Write
+        [ { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Bob", "b@c.com"] }
+        , { sql: "INSERT INTO users (name, email) VALUES (?1, ?2)", args: map SQLite.toSQLiteValue ["Dupe", "a@b.com"] }
+        ]
+        conn
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` ["Alice"]
+
+    it "executeMultiple with trailing semicolons" \conn -> do
+      SQLite.executeMultiple (createTableDDL @UsersTable <> ";;;") conn
+      runExecute conn {} (from usersTable # insert { name: "ok", email: "ok@ok.com" }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      Array.length rows `shouldEqual` 1
+
+    it "double commit throws" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      SQLite.commit txn
+      expectError $ SQLite.commit txn
+      SQLite.close conn # liftEffect
+
+    it "commit then rollback throws" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      txn <- SQLite.begin conn
+      SQLite.commit txn
+      expectError $ SQLite.rollback txn
+      SQLite.close conn # liftEffect
+
+    it "unicode and emoji in string values" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      let val = "日本語テスト 🎉"
+      runExecute conn {} (from usersTable # insert { name: val, email: "e@e.com" }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` [val]
+
+    it "all nullable columns set to NULL" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Ghost", email: "g@g.com", age: Nothing :: Maybe Int }) # void
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let ages = map (_.age) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      ages `shouldEqual` [Nothing]
+
+    it "negative integers round-trip" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Neg", email: "n@n.com", age: Just (-42) }) # void
+      rows <- runQuery conn { age: -42 } (from usersTable # selectAll # where_ @"age = $age")
+      let ages = map (_.age) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      ages `shouldEqual` [Just (-42)]
+
+    it "insert with all-default columns uses DEFAULT VALUES" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
+      runExecute conn {} (from (Proxy :: Proxy ConfigTable) # insert {}) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy ConfigTable) # selectAll)
+      let scores = map (_.score) (rows :: Array { id :: Int, active :: SQLiteBool, role :: String, score :: Int })
+      scores `shouldEqual` [0]
+
+    it "insert overriding default values" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
+      runExecute conn {} (from (Proxy :: Proxy ConfigTable) # insert { score: 99, role: "admin" }) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy ConfigTable) # selectAll)
+      let row = rows :: Array { id :: Int, active :: SQLiteBool, role :: String, score :: Int }
+      map (_.score) row `shouldEqual` [99]
+      map (_.role) row `shouldEqual` ["admin"]
+
+    it "query after connection close throws" \_ -> do
+      conn <- withTempDb
+      SQLite.close conn # liftEffect
+      expectError $ SQLite.querySimple (SQLite.SQL "SELECT 1") conn
+
+    it "concurrent reads on same connection" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@b.com" }) # void
+      results <- parSequence
+        [ runQuery conn {} (from usersTable # selectAll)
+        , runQuery conn {} (from usersTable # selectAll)
+        ]
+      let lengths = map Array.length (results :: Array (Array { id :: Int, name :: String, email :: String, age :: Maybe Int }))
+      lengths `shouldEqual` [1, 1]
 
 composeFile :: Docker.ComposeFile
 composeFile = Docker.ComposeFile "docker-compose.test.yml"
