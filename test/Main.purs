@@ -21,6 +21,7 @@ import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Type.Function (type (#))
 import Type.Proxy (Proxy(..))
+import Test.Sqlite.LibSqlServer (startLibSqlServer, stopLibSqlServer)
 import Test.Sqlite.TempDb (mkTempDbUrl)
 import Yoga.SQLite.SQLite as SQLite
 import Yoga.SQLite.Schema
@@ -525,9 +526,11 @@ spec = before setupConn do
       let result = map (\r -> unF32Vector r.embedding) (rows :: Array { id :: Int, title :: String, body :: String, embedding :: F32Vector "3" })
       result `shouldEqual` [[1.0, 2.0, 3.0]]
 
+libsqlSpec :: String -> Spec Unit
+libsqlSpec libsqlUrl = do
   describe "Turso vector (against libsql server)" do
     it "vector insert and read round-trip" \_ -> do
-      conn <- liftEffect $ SQLite.sqlite { url: "http://127.0.0.1:8090" }
+      conn <- liftEffect $ SQLite.sqlite { url: libsqlUrl }
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
       SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
       let v1 = f32Vector @"3" [1.0, 0.0, 0.0]
@@ -542,7 +545,7 @@ spec = before setupConn do
       SQLite.close conn
 
     it "vector_distance_cos" \_ -> do
-      conn <- liftEffect $ SQLite.sqlite { url: "http://127.0.0.1:8090" }
+      conn <- liftEffect $ SQLite.sqlite { url: libsqlUrl }
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
       SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
       let v1 = f32Vector @"3" [1.0, 0.0, 0.0]
@@ -561,7 +564,7 @@ spec = before setupConn do
       SQLite.close conn
 
     it "vector_top_k via fromRaw" \_ -> do
-      conn <- liftEffect $ SQLite.sqlite { url: "http://127.0.0.1:8090" }
+      conn <- liftEffect $ SQLite.sqlite { url: libsqlUrl }
       SQLite.executeSimple (SQLite.SQL "DROP INDEX IF EXISTS topk_idx") conn # void
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS topk_docs") conn # void
       SQLite.executeSimple (SQLite.SQL "CREATE TABLE topk_docs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, emb F32_BLOB(3) NOT NULL)") conn # void
@@ -580,4 +583,9 @@ spec = before setupConn do
       SQLite.close conn
 
 main :: Effect Unit
-main = launchAff_ $ runSpec [ consoleReporter ] spec
+main = launchAff_ do
+  libsqlUrl <- startLibSqlServer
+  Aff.finally stopLibSqlServer do
+    runSpec [ consoleReporter ] do
+      spec
+      libsqlSpec libsqlUrl
