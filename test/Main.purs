@@ -250,20 +250,32 @@ typedMatchTupleWhere
   :: Q _ _ (query :: String) _
 typedMatchTupleWhere = from articlesTable # selectAll # where_ @"(title, body) MATCH $query"
 
-typedSelectRaw
+typedSelectFtsScore
   :: Q _ (title :: String, score :: Number) (query :: String) _
-typedSelectRaw =
+typedSelectFtsScore =
   from articlesTable
-    # selectRaw @"title, fts_score(title, body, $query) AS score" @(title :: String, score :: Number)
+    # select @"title, fts_score(title, body, $query) AS score"
     # where_ @"(title, body) MATCH $query"
 
 typedOrderByRaw
   :: Q _ (title :: String, score :: Number) (query :: String) _
 typedOrderByRaw =
   from articlesTable
-    # selectRaw @"title, fts_score(title, body, $query) AS score" @(title :: String, score :: Number)
+    # select @"title, fts_score(title, body, $query) AS score"
     # where_ @"(title, body) MATCH $query"
     # orderByRaw @"score DESC"
+
+typedWhereVectorDist
+  :: Q _ _ (probe :: F32Vector "3", maxDist :: Number) _
+typedWhereVectorDist = from vDocsTable
+  # selectAll
+  # where_ @"vector_distance_cos(emb, $probe) < $maxDist"
+
+typedWhereFtsScore
+  :: Q _ _ (query :: String, minScore :: Number) _
+typedWhereFtsScore = from articlesTable
+  # selectAll
+  # where_ @"fts_score(title, body, $query) > $minScore"
 
 typedFromRaw
   :: Q _ (title :: String, distance :: Number) (probe :: F32Vector "3", maxDist :: Number) _
@@ -385,8 +397,8 @@ spec = before setupConn do
     it "WHERE tuple MATCH" \_ -> do
       toSQL typedMatchTupleWhere `shouldEqual` "SELECT * FROM articles WHERE (title, body) MATCH $query"
 
-    it "selectRaw with fts_score" \_ -> do
-      toSQL typedSelectRaw `shouldEqual` "SELECT title, fts_score(title, body, $query) AS score FROM articles WHERE (title, body) MATCH $query"
+    it "select with fts_score" \_ -> do
+      toSQL typedSelectFtsScore `shouldEqual` "SELECT title, fts_score(title, body, $query) AS score FROM articles WHERE (title, body) MATCH $query"
 
     it "orderByRaw" \_ -> do
       toSQL typedOrderByRaw `shouldEqual` "SELECT title, fts_score(title, body, $query) AS score FROM articles WHERE (title, body) MATCH $query ORDER BY score DESC"
@@ -396,6 +408,12 @@ spec = before setupConn do
 
     it "whereRaw" \_ -> do
       toSQL typedWhereRaw `shouldEqual` "SELECT * FROM users WHERE id IN (SELECT id FROM other)"
+
+    it "where_ with vector_distance_cos multi-arg" \_ -> do
+      toSQL typedWhereVectorDist `shouldEqual` "SELECT * FROM vdocs WHERE vector_distance_cos(emb, $probe) < $maxDist"
+
+    it "where_ with fts_score multi-arg" \_ -> do
+      toSQL typedWhereFtsScore `shouldEqual` "SELECT * FROM articles WHERE fts_score(title, body, $query) > $minScore"
 
     it "vector32 SQL literal" \_ -> do
       vector32 [1.0, 2.0, 3.0] `shouldEqual` "vector32('[1.0, 2.0, 3.0]')"
@@ -534,7 +552,7 @@ spec = before setupConn do
       let probe = f32Vector @"3" [1.0, 0.0, 0.0]
       distRows <- runQuery conn { probe: probe }
         ( from vDocsTable
-            # selectRaw @"title, vector_distance_cos(emb, $probe) AS dist" @(title :: String, dist :: Number)
+            # select @"title, vector_distance_cos(emb, $probe) AS dist"
             # where_ @"vector_distance_cos(emb, $probe) IS NOT NULL"
             # orderByRaw @"dist ASC"
         )

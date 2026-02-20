@@ -1527,7 +1527,11 @@ else instance (FlushWhereWord acc currentType tables paramsIn currentType' param
 else instance (FlushWhereWord acc currentType tables paramsIn currentType' paramsOut', ParseWhereContinue tail currentType' tables paramsOut' paramsOut) => ParseWhereGo ">" tail acc currentType tables paramsIn paramsOut
 else instance (FlushWhereWord acc currentType tables paramsIn currentType' paramsOut', ParseWhereContinue tail currentType' tables paramsOut' paramsOut) => ParseWhereGo "<" tail acc currentType tables paramsIn paramsOut
 else instance (FlushWhereWord acc currentType tables paramsIn currentType' paramsOut', ParseWhereContinue tail currentType' tables paramsOut' paramsOut) => ParseWhereGo "!" tail acc currentType tables paramsIn paramsOut
-else instance (FlushWhereWord acc currentType tables paramsIn currentType' paramsOut', ParseWhereContinue tail currentType' tables paramsOut' paramsOut) => ParseWhereGo "(" tail acc currentType tables paramsIn paramsOut
+else instance
+  ( IsMultiArgFunc acc isMultiArg funcReturnType
+  , ParseWhereFunc isMultiArg acc funcReturnType tail currentType tables paramsIn currentTypeOut paramsOut
+  ) =>
+  ParseWhereGo "(" tail acc currentType tables paramsIn paramsOut
 else instance (FlushWhereWord acc currentType tables paramsIn currentType' paramsOut', ParseWhereContinue tail currentType' tables paramsOut' paramsOut) => ParseWhereGo ")" tail acc currentType tables paramsIn paramsOut
 -- String literal: flush word, skip until closing quote
 else instance
@@ -1935,6 +1939,43 @@ else instance
   , UnwrapMaybe typ unwrapped
   ) =>
   FlushWhereWordR word currentType tables paramsIn unwrapped paramsIn
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- IsMultiArgFunc: maps function names to Boolean + return type
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class IsMultiArgFunc :: Symbol -> Boolean -> Type -> Constraint
+class IsMultiArgFunc funcName isMultiArg returnType | funcName -> isMultiArg returnType
+
+instance IsMultiArgFunc "vector_distance_cos" True Number
+else instance IsMultiArgFunc "VECTOR_DISTANCE_COS" True Number
+else instance IsMultiArgFunc "vector_extract" True String
+else instance IsMultiArgFunc "VECTOR_EXTRACT" True String
+else instance IsMultiArgFunc "fts_score" True Number
+else instance IsMultiArgFunc "FTS_SCORE" True Number
+else instance IsMultiArgFunc other False NoType
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- ParseWhereFunc: dispatch on IsMultiArgFunc result
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class ParseWhereFunc :: Boolean -> Symbol -> Type -> Symbol -> Type -> Row (Row Type) -> RL.RowList Type -> Type -> RL.RowList Type -> Constraint
+class ParseWhereFunc isMultiArg funcName funcReturnType tail currentType tables paramsIn currentTypeOut paramsOut
+  | isMultiArg funcName funcReturnType tail currentType tables paramsIn -> currentTypeOut paramsOut
+
+instance
+  ( ExtractUntilParen tail funcArgs afterParen
+  , ParseWhereContinue funcArgs NoType tables paramsIn paramsOut'
+  , SkipSpaces afterParen afterParenTrimmed
+  , ParseWhereContinue afterParenTrimmed funcReturnType tables paramsOut' paramsOut
+  ) =>
+  ParseWhereFunc True funcName funcReturnType tail currentType tables paramsIn funcReturnType paramsOut
+
+else instance
+  ( FlushWhereWord funcName currentType tables paramsIn currentType' paramsOut'
+  , ParseWhereContinue tail currentType' tables paramsOut' paramsOut
+  ) =>
+  ParseWhereFunc False funcName _returnType tail currentType tables paramsIn currentType' paramsOut
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- ValidateColumnList: comma-separated column references
