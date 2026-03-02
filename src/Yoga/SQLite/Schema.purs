@@ -1140,10 +1140,65 @@ instance ResolveAggregateArg "*" tables Star
 else instance ResolveAggregateArg "" tables Star
 else instance
   ( SkipSpaces args trimmedFront
-  , ExtractWord trimmedFront col _rest
-  , ResolveAggregateArgCol col tables argType
+  , ExtractIdent trimmedFront col rest
+  , ResolveAggregateArgDispatch col rest tables argType
   ) =>
   ResolveAggregateArg args tables argType
+
+-- ExtractIdent: like ExtractWord but also stops at "(" so we can detect nested function calls
+class ExtractIdent :: Symbol -> Symbol -> Symbol -> Constraint
+class ExtractIdent sym word rest | sym -> word rest
+
+instance ExtractIdent "" "" ""
+else instance
+  ( Symbol.Cons h t sym
+  , ExtractIdentGo h t "" word rest
+  ) =>
+  ExtractIdent sym word rest
+
+class ExtractIdentGo :: Symbol -> Symbol -> Symbol -> Symbol -> Symbol -> Constraint
+class ExtractIdentGo head tail acc word rest | head tail acc -> word rest
+
+instance (SkipSpaces tail rest) => ExtractIdentGo " " tail acc acc rest
+else instance Symbol.Cons "," tail rest => ExtractIdentGo "," tail acc acc rest
+else instance Symbol.Append "(" tail rest => ExtractIdentGo "(" tail acc acc rest
+else instance Symbol.Append acc h word => ExtractIdentGo h "" acc word ""
+else instance
+  ( Symbol.Append acc h acc'
+  , Symbol.Cons nextH nextT tail
+  , ExtractIdentGo nextH nextT acc' word rest
+  ) =>
+  ExtractIdentGo h tail acc word rest
+
+-- After extracting the identifier, check if followed by "(" (nested function call) or not (column ref)
+class ResolveAggregateArgDispatch :: Symbol -> Symbol -> Row (Row Type) -> Type -> Constraint
+class ResolveAggregateArgDispatch col rest tables argType | col rest tables -> argType
+
+instance
+  ResolveAggregateArgCol col tables argType =>
+  ResolveAggregateArgDispatch col "" tables argType
+
+else instance
+  ( Symbol.Cons h t rest
+  , ResolveAggregateArgDispatchByHead h t col tables argType
+  ) =>
+  ResolveAggregateArgDispatch col rest tables argType
+
+class ResolveAggregateArgDispatchByHead :: Symbol -> Symbol -> Symbol -> Row (Row Type) -> Type -> Constraint
+class ResolveAggregateArgDispatchByHead head tail col tables argType | head tail col tables -> argType
+
+-- Nested function call: col(...)
+instance
+  ( ExtractUntilParen tail innerArgs _afterParen
+  , ResolveAggregateArg innerArgs tables innerArgType
+  , AggregateReturnType col innerArgType argType
+  ) =>
+  ResolveAggregateArgDispatchByHead "(" tail col tables argType
+
+-- Not a function call: column reference
+else instance
+  ResolveAggregateArgCol col tables argType =>
+  ResolveAggregateArgDispatchByHead h t col tables argType
 
 class ResolveAggregateArgCol :: Symbol -> Row (Row Type) -> Type -> Constraint
 class ResolveAggregateArgCol col tables argType | col tables -> argType
@@ -2727,12 +2782,84 @@ else instance
   , SkipSpaces rest1 rest2
   , ExpectChar rest2 "=" rest3
   , SkipSpaces rest3 rest4
-  , ExtractWord rest4 excRef rest5
-  , ValidateExcludedRef excRef colName
-  , SkipSpaces rest5 rest6
-  , ParseAssignmentsContinue rest6 cols
+  , SkipExpression rest4 rest5
+  , ParseAssignmentsContinue rest5 cols
   ) =>
   ParseAssignments sym cols
+
+-- | Skip a SQL expression on the RHS of an assignment.
+-- | Handles balanced parentheses so that e.g. datetime('now') and
+-- | COALESCE(EXCLUDED.value, '') are consumed as a single expression.
+-- | Stops at an unparenthesised comma or end-of-string.
+class SkipExpression :: Symbol -> Symbol -> Constraint
+class SkipExpression sym rest | sym -> rest
+
+instance SkipExpression "" ""
+else instance
+  ( Symbol.Cons h t sym
+  , SkipExpressionGo h t rest
+  ) =>
+  SkipExpression sym rest
+
+class SkipExpressionGo :: Symbol -> Symbol -> Symbol -> Constraint
+class SkipExpressionGo head tail rest | head tail -> rest
+
+-- Comma at depth 0 → stop, keep comma in rest
+instance Symbol.Cons "," tail rest => SkipExpressionGo "," tail rest
+-- Open paren → enter nested expression
+else instance
+  ( SkipNested tail rest1
+  , SkipExpression rest1 rest
+  ) =>
+  SkipExpressionGo "(" tail rest
+-- Space → skip and continue (expressions can have spaces, e.g. "EXCLUDED.col")
+else instance (SkipSpaces tail rest1, SkipExpressionAfterSpace rest1 rest) => SkipExpressionGo " " tail rest
+-- End of string after this char
+else instance SkipExpressionGo h "" ""
+-- Regular char → continue
+else instance (Symbol.Cons h2 t2 tail, SkipExpressionGo h2 t2 rest) => SkipExpressionGo h tail rest
+
+-- | After a space in an expression, check if we've hit a comma or a new assignment (word = ...).
+-- | If the next word is a column name followed by '=', this is a new assignment, so stop.
+-- | Otherwise, continue the expression.
+class SkipExpressionAfterSpace :: Symbol -> Symbol -> Constraint
+class SkipExpressionAfterSpace sym rest | sym -> rest
+
+instance SkipExpressionAfterSpace "" ""
+else instance
+  ( Symbol.Cons h t sym
+  , SkipExpressionAfterSpaceGo h t sym rest
+  ) =>
+  SkipExpressionAfterSpace sym rest
+
+class SkipExpressionAfterSpaceGo :: Symbol -> Symbol -> Symbol -> Symbol -> Constraint
+class SkipExpressionAfterSpaceGo head tail sym rest | head tail sym -> rest
+
+-- Comma → stop
+instance Symbol.Cons "," tail rest => SkipExpressionAfterSpaceGo "," tail sym rest
+-- Otherwise continue the expression
+else instance (SkipExpressionGo h tail rest) => SkipExpressionAfterSpaceGo h tail sym rest
+
+-- | Skip a parenthesised group (after the opening paren has been consumed).
+-- | Handles nesting.
+class SkipNested :: Symbol -> Symbol -> Constraint
+class SkipNested sym rest | sym -> rest
+
+instance
+  ( Symbol.Cons h t sym
+  , SkipNestedGo h t rest
+  ) =>
+  SkipNested sym rest
+
+class SkipNestedGo :: Symbol -> Symbol -> Symbol -> Constraint
+class SkipNestedGo head tail rest | head tail -> rest
+
+-- Close paren → done
+instance SkipNestedGo ")" tail tail
+-- Open paren → recurse
+else instance (SkipNested tail rest1, SkipNested rest1 rest) => SkipNestedGo "(" tail rest
+-- Any other char → continue
+else instance (SkipNested tail rest) => SkipNestedGo h tail rest
 
 class ParseAssignmentsContinue :: Symbol -> Row Type -> Constraint
 class ParseAssignmentsContinue sym cols
@@ -2769,23 +2896,6 @@ instance ExpectCharMatch c tail c tail
 else instance
   Fail (Beside (Beside (Text "Expected '") (Quote expected)) (Beside (Text "' but got '") (Quote head))) =>
   ExpectCharMatch head tail expected rest
-
-class ValidateExcludedRef :: Symbol -> Symbol -> Constraint
-class ValidateExcludedRef ref colName
-
-instance
-  ( Symbol.Append "EXCLUDED." colName expected
-  , MatchSymbol ref expected
-  ) =>
-  ValidateExcludedRef ref colName
-
-class MatchSymbol :: Symbol -> Symbol -> Constraint
-class MatchSymbol a b
-
-instance MatchSymbol a a
-else instance
-  Fail (Beside (Beside (Text "Expected ") (Quote expected)) (Beside (Text " but got ") (Quote actual))) =>
-  MatchSymbol actual expected
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Type-level IsAutoGenerated (Boolean kind)

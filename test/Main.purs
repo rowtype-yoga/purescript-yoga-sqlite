@@ -240,6 +240,10 @@ typedGroupBy
   :: Q _ (name :: String, cnt :: Int) () _
 typedGroupBy = from usersTable # select @"name, COUNT(*) AS cnt" # groupBy @"name"
 
+typedNestedAggregate
+  :: Q _ (max_age :: Int) () _
+typedNestedAggregate = from usersTable # select @"COALESCE(MAX(age), -1) AS max_age"
+
 typedHaving
   :: Q _ (name :: String, cnt :: Int) (minCount :: Int) _
 typedHaving = from usersTable

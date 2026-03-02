@@ -1,4 +1,4 @@
--- EXPECT: Expected
+-- EXPECT: TypesDoNotUnify
 module Test.CompileFail.OnConflictBadExcluded where
 
 import Prelude
@@ -17,4 +17,5 @@ type UsersTable = Table "users"
 usersTable :: Proxy UsersTable
 usersTable = Proxy
 
-bad = from usersTable # insert { name: "A", email: "a@b.com" } # onConflict @"email" @"DO UPDATE SET name = EXCLUDED.bogus"
+-- ON CONFLICT target column must exist in the table
+bad = from usersTable # insert { name: "A", email: "a@b.com" } # onConflict @"bogus_column" @"DO UPDATE SET name = EXCLUDED.name"
