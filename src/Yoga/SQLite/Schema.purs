@@ -1042,6 +1042,15 @@ else instance
   ) =>
   ParseSelectHandleAS "as" afterKeyword colRef tables accRL outRL
 
+-- Bare alias (no AS keyword): "name n" means "name AS n"
+else instance
+  ( ResolveColumn colRef tables entry
+  , ExtractType entry typ
+  , SkipSpaces afterKeyword rest
+  , ParseSelectExpectEnd rest tables (RL.Cons keyword typ accRL) outRL
+  ) =>
+  ParseSelectHandleAS keyword afterKeyword colRef tables accRL outRL
+
 class ParseSelectExpectEnd :: Symbol -> Row (Row Type) -> RL.RowList Type -> RL.RowList Type -> Constraint
 class ParseSelectExpectEnd sym tables accRL outRL | sym tables accRL -> outRL
 
@@ -3079,6 +3088,9 @@ toSQL (Q q) = q.sql
 from :: forall name cols tables. IsSymbol name => Row.Cons name cols () tables => Proxy (Table name cols) -> Q tables () () ()
 from _ = Q { sql: reflectSymbol (Proxy :: Proxy name), values: [] }
 
+into :: forall name cols tables. IsSymbol name => Row.Cons name cols () tables => Proxy (Table name cols) -> Q tables () () (into :: Unit)
+into _ = Q { sql: reflectSymbol (Proxy :: Proxy name), values: [] }
+
 fromAs :: forall @alias name cols tables. IsSymbol name => IsSymbol alias => Row.Cons alias cols () tables => Proxy (Table name cols) -> Q tables () () ()
 fromAs _ = Q { sql: reflectSymbol (Proxy :: Proxy name) <> " " <> reflectSymbol (Proxy :: Proxy alias), values: [] }
 
@@ -3094,6 +3106,7 @@ selectAll
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Row.Lacks "where" stage
   => Row.Lacks "orderBy" stage
   => Row.Lacks "limit" stage
@@ -3111,6 +3124,7 @@ select
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Row.Lacks "where" stage
   => Row.Lacks "orderBy" stage
   => Row.Lacks "limit" stage
@@ -3128,6 +3142,7 @@ selectDistinct
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Row.Lacks "where" stage
   => Row.Lacks "orderBy" stage
   => Row.Lacks "limit" stage
@@ -3145,6 +3160,7 @@ selectRaw
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Row.Lacks "where" stage
   => Row.Lacks "orderBy" stage
   => Row.Lacks "limit" stage
@@ -3452,6 +3468,7 @@ set
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Row.Cons "set" Unit stage stage'
   => { | setRow }
   -> Q tables () () stage
@@ -3475,6 +3492,7 @@ delete
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Row.Cons "delete" Unit stage stage'
   => Q tables r p stage
   -> Q tables () () stage'
@@ -3540,6 +3558,7 @@ innerJoin
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Proxy (Table name cols)
   -> Q tables r p stage
   -> Q tables' () () (join :: Unit)
@@ -3566,6 +3585,7 @@ leftJoin
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Proxy (Table name cols)
   -> Q tables r p stage
   -> Q tables' () () (join :: Unit)
@@ -3590,6 +3610,7 @@ innerJoinAs
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Proxy (Table name cols)
   -> Q tables r p stage
   -> Q tables' () () (join :: Unit)
@@ -3619,6 +3640,7 @@ leftJoinAs
   => Row.Lacks "insert" stage
   => Row.Lacks "set" stage
   => Row.Lacks "delete" stage
+  => Row.Lacks "into" stage
   => Proxy (Table name cols)
   -> Q tables r p stage
   -> Q tables' () () (join :: Unit)
