@@ -10,7 +10,7 @@ import Data.DateTime (DateTime(..), date, time)
 import Data.JSDate as JSDate
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Time (Time(..), hour, minute, second)
-import Data.Newtype (class Newtype, un)
+import Data.Newtype (class Newtype)
 import Data.Nullable (toNullable)
 import Data.UUID (UUID)
 import JS.BigInt (BigInt)
@@ -43,7 +43,7 @@ import Prim.TypeError (class Fail, Beside, Text, Quote)
 import Record (get) as Record
 import Type.Proxy (Proxy(..))
 import Type.RowList (class ListToRow)
-import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify)
+import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify, parseJSON)
 import Yoga.SQLite.SQLite as SQLite
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -94,7 +94,9 @@ newtype Json = Json Foreign
 derive instance Newtype Json _
 
 instance ReadForeign Json where
-  readImpl = pure <<< Json
+  readImpl f = do
+    s :: String <- readImpl f
+    Json <$> parseJSON s
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- SQLUUID: newtype over Data.UUID.UUID (stored as TEXT in SQLite)
@@ -318,7 +320,10 @@ instance IsSymbol dim => SQLiteTypeName (F32Vector dim) where
 instance IsSymbol dim => SQLiteTypeName (F64Vector dim) where
   sqliteTypeName _ = "F64_BLOB(" <> reflectSymbol (Proxy :: Proxy dim) <> ")"
 
-instance SQLiteTypeName a => SQLiteTypeName (Maybe a) where
+else instance SQLiteTypeName a => SQLiteTypeName (Maybe a) where
+  sqliteTypeName _ = sqliteTypeName (Proxy :: Proxy a)
+
+else instance SQLiteTypeName a => SQLiteTypeName (ForeignKey table references col a) where
   sqliteTypeName _ = sqliteTypeName (Proxy :: Proxy a)
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
