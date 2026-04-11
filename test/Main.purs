@@ -8,7 +8,7 @@ import Data.Enum (toEnum)
 import Data.UUID as UUID
 import JS.BigInt as JS.BigInt
 import Data.Maybe (Maybe(..), fromJust, isNothing)
-import Data.Newtype (un)
+import Data.Newtype (class Newtype, un)
 import Data.Array as Array
 import Data.Tuple.Nested ((/\))
 import Data.Time (Time(..))
@@ -27,6 +27,7 @@ import Test.Spec.Runner (runSpec)
 import Type.Function (type (#))
 import Type.Proxy (Proxy(..))
 import Test.Sqlite.TempDb (mkTempDbUrl)
+import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify)
 import Yoga.Test.Docker as Docker
 import Yoga.SQLite.SQLite as SQLite
 import Yoga.SQLite.Schema
@@ -133,6 +134,34 @@ type NullableEverythingTable = Table "nullable_everything"
   , score :: Maybe Number
   , active :: Maybe SQLiteBool
   )
+
+newtype Code = Code String
+
+derive instance Newtype Code _
+derive newtype instance Eq Code
+derive newtype instance Show Code
+
+instance SQLiteTypeName Code where
+  sqliteTypeName _ = "TEXT"
+
+instance ReadForeign Code where
+  readImpl = map Code <<< readImpl
+
+type CodesTable = Table "codes"
+  ( code :: Code # PrimaryKey
+  )
+
+type LinkedCodesTable = Table "linked_codes"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , code :: ForeignKey "codes" References "code" Code
+  )
+
+typedForeignKeyNewtypeSelectAll
+  :: Q _
+       (code :: Code, id :: Int)
+       ()
+       _
+typedForeignKeyNewtypeSelectAll = from (Proxy :: Proxy LinkedCodesTable) # selectAll
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Type annotations prove correctness at compile time
@@ -412,6 +441,10 @@ spec = before setupConn do
     it "generates DDL with defaults" \_ -> do
       let result = createTableDDL @ConfigTable
       result `shouldEqual` "CREATE TABLE config (active INTEGER NOT NULL DEFAULT 1, id INTEGER PRIMARY KEY AUTOINCREMENT, role TEXT NOT NULL DEFAULT 'user', score INTEGER NOT NULL DEFAULT 0)"
+
+    it "uses wrapped SQLite type names inside ForeignKey" \_ -> do
+      let result = createTableDDL @LinkedCodesTable
+      result `shouldEqual` "CREATE TABLE linked_codes (code TEXT NOT NULL REFERENCES codes(code), id INTEGER PRIMARY KEY AUTOINCREMENT)"
 
   describe "SQL builder output" do
     it "SELECT *" \_ -> do
@@ -792,6 +825,9 @@ spec = before setupConn do
 
     it "RandomRowId insert excludes id" \_ -> do
       toSQL typedRandomRowIdInsert `shouldEqual` "INSERT INTO things (name) VALUES (?1)"
+
+    it "ForeignKey wrapped newtype survives selectAll typing" \_ -> do
+      toSQL typedForeignKeyNewtypeSelectAll `shouldEqual` "SELECT * FROM linked_codes"
 
   describe "Edge cases" do
     it "Maybe Just as SQLiteValue passes the inner value" \conn -> do
@@ -1202,12 +1238,23 @@ spec = before setupConn do
       let dts = map (_.created_at) (rows :: Array { created_at :: DateTime })
       dts `shouldEqual` [dt]
 
+    it "ForeignKey newtype round-trips without wrapper workaround" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @CodesTable)) conn # void
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @LinkedCodesTable)) conn # void
+      runExecute conn {} (from (Proxy :: Proxy CodesTable) # insert { code: Code "alpha" }) # void
+      runExecute conn {} (from (Proxy :: Proxy LinkedCodesTable) # insert { code: Code "alpha" }) # void
+      rows <- runQuery conn {} (from (Proxy :: Proxy LinkedCodesTable) # select @"code")
+      let codes = map (_.code) (rows :: Array { code :: Code })
+      codes `shouldEqual` [Code "alpha"]
+
     it "Json round-trip with nested object" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @EventsTable)) conn # void
       let obj = unsafeToForeign { key: "value", nested: { a: 1 } }
       runExecute conn {} (from eventsTable # insert { title: "test", metadata: Json obj, created_at: mkDateTime 2024 1 1 0 0 0 }) # void
       rows <- runQuery conn {} (from eventsTable # select @"metadata")
       Array.length (rows :: Array { metadata :: Json }) `shouldEqual` 1
+      let Json f = unsafePartial $ fromJust $ Array.head (map _.metadata rows)
+      unsafeStringify f `shouldEqual` unsafeStringify obj
 
     it "onConflictDoNothing does not insert duplicate" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
