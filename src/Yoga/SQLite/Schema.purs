@@ -225,6 +225,9 @@ unF64Vector (F64Vector buf) = SQLite.f64VectorToArray buf
 instance ReadForeign (F64Vector dim) where
   readImpl = pure <<< F64Vector
 
+instance ReadForeign a => ReadForeign (ForeignKey table references col a) where
+  readImpl = unsafeCoerce (readImpl :: Foreign -> _ a)
+
 instance SQLite.ToSQLiteValue (F64Vector dim) where
   toSQLiteValue (F64Vector f) = unsafeCoerce f
 
@@ -3683,7 +3686,7 @@ union
   => Q tables1 result params1 stage1
   -> Q tables2 result params2 stage2
   -> Q tables1 result params SetOpStage
-union (Q q1) (Q q2) = Q { sql: "(" <> q1.sql <> ") UNION (" <> q2.sql <> ")", values: q1.values <> q2.values }
+union (Q q1) (Q q2) = Q { sql: q1.sql <> " UNION " <> q2.sql, values: q1.values <> q2.values }
 
 unionAll
   :: forall tables1 tables2 result params1 params2 params stage1 stage2
@@ -3694,7 +3697,7 @@ unionAll
   => Q tables1 result params1 stage1
   -> Q tables2 result params2 stage2
   -> Q tables1 result params SetOpStage
-unionAll (Q q1) (Q q2) = Q { sql: "(" <> q1.sql <> ") UNION ALL (" <> q2.sql <> ")", values: q1.values <> q2.values }
+unionAll (Q q1) (Q q2) = Q { sql: q1.sql <> " UNION ALL " <> q2.sql, values: q1.values <> q2.values }
 
 intersect
   :: forall tables1 tables2 result params1 params2 params stage1 stage2
@@ -3705,7 +3708,7 @@ intersect
   => Q tables1 result params1 stage1
   -> Q tables2 result params2 stage2
   -> Q tables1 result params SetOpStage
-intersect (Q q1) (Q q2) = Q { sql: "(" <> q1.sql <> ") INTERSECT (" <> q2.sql <> ")", values: q1.values <> q2.values }
+intersect (Q q1) (Q q2) = Q { sql: q1.sql <> " INTERSECT " <> q2.sql, values: q1.values <> q2.values }
 
 intersectAll
   :: forall tables1 tables2 result params1 params2 params stage1 stage2
@@ -3716,7 +3719,7 @@ intersectAll
   => Q tables1 result params1 stage1
   -> Q tables2 result params2 stage2
   -> Q tables1 result params SetOpStage
-intersectAll (Q q1) (Q q2) = Q { sql: "(" <> q1.sql <> ") INTERSECT ALL (" <> q2.sql <> ")", values: q1.values <> q2.values }
+intersectAll (Q q1) (Q q2) = Q { sql: q1.sql <> " INTERSECT ALL " <> q2.sql, values: q1.values <> q2.values }
 
 except_
   :: forall tables1 tables2 result params1 params2 params stage1 stage2
@@ -3727,7 +3730,7 @@ except_
   => Q tables1 result params1 stage1
   -> Q tables2 result params2 stage2
   -> Q tables1 result params SetOpStage
-except_ (Q q1) (Q q2) = Q { sql: "(" <> q1.sql <> ") EXCEPT (" <> q2.sql <> ")", values: q1.values <> q2.values }
+except_ (Q q1) (Q q2) = Q { sql: q1.sql <> " EXCEPT " <> q2.sql, values: q1.values <> q2.values }
 
 exceptAll
   :: forall tables1 tables2 result params1 params2 params stage1 stage2
@@ -3738,7 +3741,7 @@ exceptAll
   => Q tables1 result params1 stage1
   -> Q tables2 result params2 stage2
   -> Q tables1 result params SetOpStage
-exceptAll (Q q1) (Q q2) = Q { sql: "(" <> q1.sql <> ") EXCEPT ALL (" <> q2.sql <> ")", values: q1.values <> q2.values }
+exceptAll (Q q1) (Q q2) = Q { sql: q1.sql <> " EXCEPT ALL " <> q2.sql, values: q1.values <> q2.values }
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Query execution

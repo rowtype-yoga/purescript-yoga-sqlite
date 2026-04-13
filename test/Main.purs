@@ -13,8 +13,7 @@ import Data.Array as Array
 import Data.Tuple.Nested ((/\))
 import Data.Time (Time(..))
 import Effect (Effect)
-import Data.Time.Duration (Seconds(..), fromDuration)
-import Effect.Aff (Aff, bracket, launchAff_)
+import Effect.Aff (Aff, launchAff_)
 import Effect.Class (liftEffect)
 import Foreign (unsafeToForeign)
 import Partial.Unsafe (unsafePartial)
@@ -28,7 +27,6 @@ import Type.Function (type (#))
 import Type.Proxy (Proxy(..))
 import Test.Sqlite.TempDb (mkTempDbUrl)
 import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify)
-import Yoga.Test.Docker as Docker
 import Yoga.SQLite.SQLite as SQLite
 import Yoga.SQLite.Schema
 
@@ -307,6 +305,41 @@ typedUnion = do
   let q2 = from usersTable # select @"name"
   union q1 q2
 
+typedUnionAll
+  :: Q _ (name :: String) () _
+typedUnionAll = do
+  let q1 = from usersTable # select @"name"
+  let q2 = from usersTable # select @"name"
+  unionAll q1 q2
+
+typedIntersect
+  :: Q _ (name :: String) () _
+typedIntersect = do
+  let q1 = from usersTable # select @"name"
+  let q2 = from usersTable # select @"name"
+  intersect q1 q2
+
+typedIntersectAll
+  :: Q _ (name :: String) () _
+typedIntersectAll = do
+  let q1 = from usersTable # select @"name"
+  let q2 = from usersTable # select @"name"
+  intersectAll q1 q2
+
+typedExcept
+  :: Q _ (name :: String) () _
+typedExcept = do
+  let q1 = from usersTable # select @"name"
+  let q2 = from usersTable # select @"name"
+  except_ q1 q2
+
+typedExceptAll
+  :: Q _ (name :: String) () _
+typedExceptAll = do
+  let q1 = from usersTable # select @"name"
+  let q2 = from usersTable # select @"name"
+  exceptAll q1 q2
+
 -- F32Vector / FTS compile-time assertions
 typedDocumentsSelectAll
   :: Q _
@@ -505,7 +538,22 @@ spec = before setupConn do
       toSQL typedLeftJoin `shouldEqual` "SELECT users.name, posts.title FROM users LEFT JOIN posts ON users.id = posts.user_id"
 
     it "UNION" \_ -> do
-      toSQL typedUnion `shouldEqual` "(SELECT name FROM users) UNION (SELECT name FROM users)"
+      toSQL typedUnion `shouldEqual` "SELECT name FROM users UNION SELECT name FROM users"
+
+    it "UNION ALL" \_ -> do
+      toSQL typedUnionAll `shouldEqual` "SELECT name FROM users UNION ALL SELECT name FROM users"
+
+    it "INTERSECT" \_ -> do
+      toSQL typedIntersect `shouldEqual` "SELECT name FROM users INTERSECT SELECT name FROM users"
+
+    it "INTERSECT ALL" \_ -> do
+      toSQL typedIntersectAll `shouldEqual` "SELECT name FROM users INTERSECT ALL SELECT name FROM users"
+
+    it "EXCEPT" \_ -> do
+      toSQL typedExcept `shouldEqual` "SELECT name FROM users EXCEPT SELECT name FROM users"
+
+    it "EXCEPT ALL" \_ -> do
+      toSQL typedExceptAll `shouldEqual` "SELECT name FROM users EXCEPT ALL SELECT name FROM users"
 
     it "RETURNING ALL" \_ -> do
       toSQL typedReturningAll `shouldEqual` "DELETE FROM users WHERE id = $id RETURNING *"
@@ -1270,21 +1318,37 @@ spec = before setupConn do
       n <- runExecute conn {} (from usersTable # insert { name: "Alice2", email: "a@a.com" } # onConflictDoNothing @"email")
       n `shouldEqual` 0
 
-composeFile :: Docker.ComposeFile
-composeFile = Docker.ComposeFile "docker-compose.test.yml"
+    it "UNION ALL keeps duplicates" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com" }) # void
+      let q = from usersTable # select @"name"
+      rows <- runQuery conn {} (unionAll q q)
+      let names = map (_.name) (rows :: Array { name :: String })
+      names `shouldEqual` ["Alice", "Alice"]
 
-libsqlUrl :: String
-libsqlUrl = "http://127.0.0.1:8090"
+    it "INTERSECT returns common rows" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com" }) # void
+      runExecute conn {} (from usersTable # insert { name: "Bob", email: "b@b.com" }) # void
+      let q1 = from usersTable # select @"name"
+      let q2 = from usersTable # select @"name" # where_ @"name = $name"
+      rows <- runQuery conn { name: "Alice" } (intersect q1 q2)
+      let names = map (_.name) (rows :: Array { name :: String })
+      names `shouldEqual` ["Alice"]
 
-withLibSql :: (SQLite.Connection -> Aff Unit) -> Aff Unit
-withLibSql test = do
-  conn <- SQLite.sqlite { url: libsqlUrl } # liftEffect
-  test conn
-  SQLite.close conn # liftEffect
+    it "EXCEPT removes matching rows" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      runExecute conn {} (from usersTable # insert { name: "Alice", email: "a@a.com" }) # void
+      runExecute conn {} (from usersTable # insert { name: "Bob", email: "b@b.com" }) # void
+      let q1 = from usersTable # select @"name"
+      let q2 = from usersTable # select @"name" # where_ @"name = $name"
+      rows <- runQuery conn { name: "Alice" } (except_ q1 q2)
+      let names = map (_.name) (rows :: Array { name :: String })
+      names `shouldEqual` ["Bob"]
 
 libsqlSpec :: Spec Unit
-libsqlSpec = around withLibSql do
-  describe "Turso vector (against libsql server)" do
+libsqlSpec = before withTempDb do
+  describe "libsql vector" do
     it "vector insert and read round-trip" \conn -> do
       SQLite.executeSimple (SQLite.SQL "DROP TABLE IF EXISTS vdocs") conn # void
       SQLite.executeSimple (SQLite.SQL (createTableDDL @VDocsTable)) conn # void
@@ -1334,10 +1398,6 @@ libsqlSpec = around withLibSql do
 
 main :: Effect Unit
 main = launchAff_ do
-  bracket
-    (Docker.startService composeFile (Docker.Timeout (30.0 # Seconds # fromDuration)))
-    (\_ -> Docker.stopService composeFile)
-    ( \_ -> runSpec [ consoleReporter ] do
-        spec
-        libsqlSpec
-    )
+  runSpec [ consoleReporter ] do
+    spec
+    libsqlSpec

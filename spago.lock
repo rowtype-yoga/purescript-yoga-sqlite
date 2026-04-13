@@ -87,7 +87,7 @@
               "uuid": ">=9.0.0 <10.0.0"
             },
             {
-              "yoga-json": ">=5.2.0 <6.0.0"
+              "yoga-json": ">=5.2.1 <6.0.0"
             }
           ]
         },
@@ -101,9 +101,6 @@
             },
             {
               "spec": ">=7.0.0 <8.0.0"
-            },
-            {
-              "yoga-test-docker": ">=0.1.0 <1.0.0"
             }
           ]
         }
@@ -960,8 +957,8 @@
     },
     "yoga-json": {
       "type": "registry",
-      "version": "5.2.0",
-      "integrity": "sha256-M+kkz6E1Gf+C4bKnhqoBFIoVcc74loi3rLULePbB204=",
+      "version": "5.2.1",
+      "integrity": "sha256-12I7qIf27oKV/D/YRcHtGpN8n7GQ0Bm3uzvI4ZjOQrs=",
       "dependencies": [
         "arrays",
         "bifunctors",
@@ -995,18 +992,6 @@
         "unsafe-coerce",
         "variant",
         "yoga-tree"
-      ]
-    },
-    "yoga-test-docker": {
-      "type": "registry",
-      "version": "0.1.1",
-      "integrity": "sha256-BKyHoGahs1D5PbjqSKL+6vvUJQ62mbpXYJOF9UwaGb8=",
-      "dependencies": [
-        "aff",
-        "datetime",
-        "exceptions",
-        "newtype",
-        "prelude"
       ]
     },
     "yoga-tree": {

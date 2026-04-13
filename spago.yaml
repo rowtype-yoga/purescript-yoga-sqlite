@@ -36,11 +36,10 @@ package:
     - typelevel-prelude: ">=7.0.0 <8.0.0"
     - unsafe-coerce: ">=6.0.0 <7.0.0"
     - uuid: ">=9.0.0 <10.0.0"
-    - yoga-json: ">=5.2.0 <6.0.0"
+    - yoga-json: ">=5.2.1 <6.0.0"
   test:
     main: Test.Sqlite.Main
     dependencies:
       - spec: ">=7.0.0 <8.0.0"
       - console: ">=6.0.0 <7.0.0"
       - partial: ">=4.0.0 <5.0.0"
-      - yoga-test-docker: ">=0.1.0 <1.0.0"
