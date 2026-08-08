@@ -4,6 +4,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Array (intercalate, mapWithIndex, foldl)
+import Data.ArrayBuffer.Types (ArrayBuffer, Uint8Array)
 import Data.Date (Date, exactDate)
 import Data.Enum (toEnum, fromEnum)
 import Data.DateTime (DateTime(..), date, time)
@@ -97,6 +98,26 @@ instance ReadForeign Json where
   readImpl f = do
     s :: String <- readImpl f
     Json <$> parseJSON s
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+-- Blob: general-purpose SQLite BLOB backed by an ArrayBuffer
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+newtype Blob = Blob ArrayBuffer
+
+derive instance Newtype Blob _
+
+blobFromUint8Array :: Uint8Array -> Blob
+blobFromUint8Array = Blob <<< SQLite.uint8ArrayToArrayBuffer
+
+blobToUint8Array :: Blob -> Uint8Array
+blobToUint8Array (Blob buffer) = SQLite.arrayBufferToUint8Array buffer
+
+instance ReadForeign Blob where
+  readImpl = pure <<< Blob <<< unsafeCoerce
+
+instance SQLite.ToSQLiteValue Blob where
+  toSQLiteValue (Blob buffer) = unsafeCoerce buffer
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- SQLUUID: newtype over Data.UUID.UUID (stored as TEXT in SQLite)
@@ -316,6 +337,9 @@ instance SQLiteTypeName SQLTime where
 
 instance SQLiteTypeName Json where
   sqliteTypeName _ = "TEXT"
+
+instance SQLiteTypeName Blob where
+  sqliteTypeName _ = "BLOB"
 
 instance IsSymbol dim => SQLiteTypeName (F32Vector dim) where
   sqliteTypeName _ = "F32_BLOB(" <> reflectSymbol (Proxy :: Proxy dim) <> ")"
