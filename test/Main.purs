@@ -25,7 +25,7 @@ import Test.Spec.Reporter.Console (consoleReporter)
 import Test.Spec.Runner (runSpec)
 import Type.Function (type (#))
 import Type.Proxy (Proxy(..))
-import Test.Sqlite.TempDb (mkTempDbUrl)
+import Test.Sqlite.TempDb (mkTempDbUrl, testBytes, uint8ArrayValues)
 import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify)
 import Yoga.SQLite.SQLite as SQLite
 import Yoga.SQLite.Schema
@@ -107,6 +107,14 @@ type F64DocsTable = Table "f64docs"
 
 f64DocsTable :: Proxy F64DocsTable
 f64DocsTable = Proxy
+
+type BlobsTable = Table "blobs"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , body :: Blob
+  )
+
+blobsTable :: Proxy BlobsTable
+blobsTable = Proxy
 
 type RandomRowIdTable = Table "things"
   ( id :: Int # PrimaryKey # RandomRowId
@@ -479,6 +487,10 @@ spec = before setupConn do
       let result = createTableDDL @LinkedCodesTable
       result `shouldEqual` "CREATE TABLE linked_codes (code TEXT NOT NULL REFERENCES codes(code), id INTEGER PRIMARY KEY AUTOINCREMENT)"
 
+    it "derives BLOB columns from Blob" \_ -> do
+      let result = createTableDDL @BlobsTable
+      result `shouldEqual` "CREATE TABLE blobs (body BLOB NOT NULL, id INTEGER PRIMARY KEY AUTOINCREMENT)"
+
   describe "SQL builder output" do
     it "SELECT *" \_ -> do
       toSQL typedSelectAll `shouldEqual` "SELECT * FROM users"
@@ -699,6 +711,13 @@ spec = before setupConn do
       rows <- runQuery conn {} (from f64DocsTable # selectAll)
       let result = map (\r -> unF64Vector r.embedding) (rows :: Array { id :: Int, title :: String, embedding :: F64Vector "3" })
       result `shouldEqual` [[1.0, 2.0, 3.0]]
+
+    it "round-trips a sliced Uint8Array as one BLOB" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @BlobsTable)) conn # void
+      runExecute conn {} (from blobsTable # insert { body: blobFromUint8Array testBytes }) # void
+      rows <- runQuery conn {} (from blobsTable # selectAll)
+      let values = map (uint8ArrayValues <<< blobToUint8Array <<< _.body) (rows :: Array { id :: Int, body :: Blob })
+      values `shouldEqual` [ [ 0, 1, 2, 127, 128, 255 ] ]
 
     it "columnTypes populated after query" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void

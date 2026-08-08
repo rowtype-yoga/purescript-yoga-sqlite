@@ -2,6 +2,7 @@ module Yoga.SQLite.SQLite where
 
 import Prelude
 
+import Data.ArrayBuffer.Types (ArrayBuffer, Uint8Array)
 import Data.DateTime (DateTime)
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
@@ -17,6 +18,16 @@ import Prim.Row (class Union)
 import Promise (Promise)
 import Promise.Aff (toAffE) as Promise
 import Unsafe.Coerce (unsafeCoerce)
+
+foreign import uint8ArrayToArrayBufferImpl :: Uint8Array -> ArrayBuffer
+
+uint8ArrayToArrayBuffer :: Uint8Array -> ArrayBuffer
+uint8ArrayToArrayBuffer = uint8ArrayToArrayBufferImpl
+
+foreign import arrayBufferToUint8ArrayImpl :: ArrayBuffer -> Uint8Array
+
+arrayBufferToUint8Array :: ArrayBuffer -> Uint8Array
+arrayBufferToUint8Array = arrayBufferToUint8ArrayImpl
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Opaque Foreign Types

@@ -160,6 +160,15 @@ export const pingImpl = async (client) => {
 // Convert DateTime (JSDate) to ISO string for SQLite TEXT storage
 export const dateTimeToStringImpl = (jsDate) => jsDate.toISOString();
 
+// General SQLite BLOB conversions. Copy a sliced view so unrelated bytes from
+// its backing buffer are never persisted.
+export const uint8ArrayToArrayBufferImpl = (bytes) =>
+  bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength
+    ? bytes.buffer
+    : bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+
+export const arrayBufferToUint8ArrayImpl = (buffer) => new Uint8Array(buffer);
+
 // F32 vector <-> Array conversion for Turso vector columns
 export const f32VectorFromArrayImpl = (arr) => new Float32Array(arr).buffer;
 export const f32VectorToArrayImpl = (buf) => Array.from(new Float32Array(buf));
