@@ -6,4 +6,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: rowtype-yoga/purescript-yoga-actions/.github/actions/setup@main
-      - run: spago build
+      - run: bun install --frozen-lockfile
+      - run: spago test
+      - run: bash compile-fail-tests/run.sh

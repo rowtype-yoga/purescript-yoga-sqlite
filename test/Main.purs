@@ -6,16 +6,21 @@ import Data.Date (canonicalDate)
 import Data.DateTime (DateTime(..))
 import Data.Enum (toEnum)
 import Data.UUID as UUID
+import JS.BigInt (BigInt)
 import JS.BigInt as JS.BigInt
+import Data.Number as Number
 import Data.Maybe (Maybe(..), fromJust, isNothing)
 import Data.Newtype (class Newtype, un)
 import Data.Array as Array
 import Data.Tuple.Nested ((/\))
 import Data.Time (Time(..))
+import Data.Time.Duration (Milliseconds(..))
 import Effect (Effect)
-import Effect.Aff (Aff, launchAff_)
+import Effect.Aff (Aff, delay, forkAff, killFiber, launchAff_)
 import Effect.Class (liftEffect)
-import Foreign (unsafeToForeign)
+import Effect.Exception (error)
+import Effect.Ref as Ref
+import Foreign (Foreign, unsafeToForeign)
 import Partial.Unsafe (unsafePartial)
 import Prim.Boolean (True)
 import Test.Spec (Spec, around, before, describe, it)
@@ -29,6 +34,8 @@ import Test.Sqlite.TempDb (mkTempDbUrl, testBytes, uint8ArrayValues)
 import Yoga.JSON (class ReadForeign, readImpl, unsafeStringify)
 import Yoga.SQLite.SQLite as SQLite
 import Yoga.SQLite.Schema
+
+foreign import undefinedValue :: Foreign
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Table type definitions
@@ -60,6 +67,14 @@ type EventsTable = Table "events"
 
 eventsTable :: Proxy EventsTable
 eventsTable = Proxy
+
+type NullableJsonTable = Table "nullable_json"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , metadata :: Maybe Json
+  )
+
+nullableJsonTable :: Proxy NullableJsonTable
+nullableJsonTable = Proxy
 
 type PostsTable = Table "posts"
   ( id :: Int # PrimaryKey # AutoIncrement
@@ -141,11 +156,33 @@ type NullableEverythingTable = Table "nullable_everything"
   , active :: Maybe SQLiteBool
   )
 
+type ScalarBindingsTable = Table "scalar_bindings"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , text_value :: String
+  , int_value :: Int
+  , real_value :: Number
+  , bool_value :: SQLiteBool
+  , datetime_value :: DateTime
+  , nullable_value :: Maybe String
+  )
+
+scalarBindingsTable :: Proxy ScalarBindingsTable
+scalarBindingsTable = Proxy
+
+type BigIntBindingsTable = Table "bigint_bindings"
+  ( id :: Int # PrimaryKey # AutoIncrement
+  , value :: BigInt
+  )
+
+bigIntBindingsTable :: Proxy BigIntBindingsTable
+bigIntBindingsTable = Proxy
+
 newtype Code = Code String
 
 derive instance Newtype Code _
 derive newtype instance Eq Code
 derive newtype instance Show Code
+derive newtype instance SQLite.ToSQLiteValue Code
 
 instance SQLiteTypeName Code where
   sqliteTypeName _ = "TEXT"
@@ -460,6 +497,9 @@ mkDateTime y m d h mi s = unsafePartial do
   let ms = fromJust (toEnum 0)
   DateTime (canonicalDate year month day) (Time hour minute second ms)
 
+renderJson :: Json -> String
+renderJson (Json value) = unsafeStringify value
+
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Spec
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -664,6 +704,35 @@ spec = before setupConn do
       rows <- runQuery conn {} (from usersTable # selectAll)
       let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
       names `shouldEqual` []
+      SQLite.close conn # liftEffect
+
+    it "rolls back a cancelled transaction and leaves the connection usable" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
+      wrote <- liftEffect $ Ref.new false
+      fiber <- forkAff $ SQLite.transaction
+        (\txn -> do
+          runExecuteTx txn {}
+            (from usersTable # insert { name: "Cancelled", email: "cancelled@test.com" })
+            # void
+          liftEffect $ Ref.write true wrote
+          delay (Milliseconds 10000.0)
+        )
+        conn
+      delay (Milliseconds 50.0)
+      didWrite <- liftEffect $ Ref.read wrote
+      didWrite `shouldEqual` true
+      killFiber (error "cancel transaction") fiber
+      rows <- runQuery conn {} (from usersTable # selectAll)
+      let names = map (_.name) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+      names `shouldEqual` []
+      SQLite.executeSimple
+        (SQLite.SQL "INSERT INTO users (name, email) VALUES ('Healthy', 'healthy@test.com')")
+        conn
+        # void
+      healthyRows <- runQuery conn {} (from usersTable # selectAll)
+      map (_.name) (healthyRows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
+        `shouldEqual` [ "Healthy" ]
       SQLite.close conn # liftEffect
 
     it "queryOne returns Maybe" \conn -> do
@@ -896,8 +965,169 @@ spec = before setupConn do
     it "ForeignKey wrapped newtype survives selectAll typing" \_ -> do
       toSQL typedForeignKeyNewtypeSelectAll `shouldEqual` "SELECT * FROM linked_codes"
 
-  describe "Edge cases" do
-    it "Maybe Just as SQLiteValue passes the inner value" \conn -> do
+  describe "How to bind values consistently" do
+    it "uses the same scalar encoding for positional, batch, and migrate statements" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @ScalarBindingsTable)) conn # void
+      let dt1 = mkDateTime 2024 1 2 3 4 5
+      let dt2 = mkDateTime 2024 2 3 4 5 6
+      let dt3 = mkDateTime 2024 3 4 5 6 7
+      SQLite.execute
+        (SQLite.SQL "INSERT INTO scalar_bindings (text_value, int_value, real_value, bool_value, datetime_value, nullable_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
+        [ SQLite.toSQLiteValue "positional"
+        , SQLite.toSQLiteValue 42
+        , SQLite.toSQLiteValue 1.25
+        , SQLite.toSQLiteValue true
+        , SQLite.toSQLiteValue dt1
+        , SQLite.toSQLiteValue (Just (Just "nested") :: Maybe (Maybe String))
+        ]
+        conn # void
+      SQLite.batch SQLite.Write
+        [ { sql: "INSERT INTO scalar_bindings (text_value, int_value, real_value, bool_value, datetime_value, nullable_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+          , args:
+              [ SQLite.toSQLiteValue "batch"
+              , SQLite.toSQLiteValue (-7)
+              , SQLite.toSQLiteValue 2.5
+              , SQLite.toSQLiteValue false
+              , SQLite.toSQLiteValue dt2
+              , SQLite.toSQLiteValue (Nothing :: Maybe String)
+              ]
+          }
+        ]
+        conn # void
+      SQLite.migrate
+        [ { sql: "INSERT INTO scalar_bindings (text_value, int_value, real_value, bool_value, datetime_value, nullable_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+          , args:
+              [ SQLite.toSQLiteValue "migrate"
+              , SQLite.toSQLiteValue 0
+              , SQLite.toSQLiteValue (-3.75)
+              , SQLite.toSQLiteValue true
+              , SQLite.toSQLiteValue dt3
+              , SQLite.toSQLiteValue (Just "value")
+              ]
+          }
+        ]
+        conn # void
+      rows <- runQuery conn {} (from scalarBindingsTable # selectAll # orderBy @"id")
+      let actual = rows :: Array
+            { id :: Int
+            , text_value :: String
+            , int_value :: Int
+            , real_value :: Number
+            , bool_value :: SQLiteBool
+            , datetime_value :: DateTime
+            , nullable_value :: Maybe String
+            }
+      map (_.text_value) actual `shouldEqual` ["positional", "batch", "migrate"]
+      map (_.bool_value) actual `shouldEqual` [SQLiteBool true, SQLiteBool false, SQLiteBool true]
+      map (_.datetime_value) actual `shouldEqual` [dt1, dt2, dt3]
+      map (_.nullable_value) actual `shouldEqual` [Just "nested", Nothing, Just "value"]
+
+    it "converts typed SET values and named DateTime and Json parameters before binding" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @EventsTable)) conn # void
+      let before = mkDateTime 2024 4 5 6 7 8
+      let after = mkDateTime 2025 5 6 7 8 9
+      let original = unsafeToForeign { version: 1, nested: { ok: false } }
+      let replacement = unsafeToForeign { version: 2, nested: { ok: true } }
+      runExecute conn {}
+        (from eventsTable # insert { title: "before", metadata: Json original, created_at: before }) # void
+      changed <- runExecute conn { created_at: before }
+        ( from eventsTable
+            # set { title: "after", metadata: Json replacement, created_at: after }
+            # where_ @"created_at = $created_at"
+        )
+      changed `shouldEqual` 1
+      rows <- runQuery conn { metadata: Json replacement, created_at: after }
+        ( from eventsTable
+            # select @"title, metadata, created_at"
+            # where_ @"metadata = $metadata AND created_at = $created_at"
+        )
+      let actual = rows :: Array { title :: String, metadata :: Json, created_at :: DateTime }
+      map (_.title) actual `shouldEqual` ["after"]
+      map (_.created_at) actual `shouldEqual` [after]
+      let Json stored = unsafePartial $ fromJust $ map (_.metadata) actual # Array.head
+      unsafeStringify stored `shouldEqual` unsafeStringify replacement
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @DateTimeTable)) conn # void
+      let sqlDate = unsafePartial do
+            let year = fromJust (toEnum 2025)
+            let month = fromJust (toEnum 5)
+            let day = fromJust (toEnum 6)
+            SQLDate (canonicalDate year month day)
+      let sqlTime = unsafePartial do
+            let hour = fromJust (toEnum 7)
+            let minute = fromJust (toEnum 8)
+            let second = fromJust (toEnum 9)
+            let millisecond = fromJust (toEnum 0)
+            SQLTime (Time hour minute second millisecond)
+      runExecute conn {}
+        (from (Proxy :: Proxy DateTimeTable) # insert { date_col: sqlDate, time_col: sqlTime, dt_col: after }) # void
+      dateRows <- runQuery conn { date_col: sqlDate, time_col: sqlTime }
+        ( from (Proxy :: Proxy DateTimeTable)
+            # select @"date_col, time_col"
+            # where_ @"date_col = $date_col AND time_col = $time_col"
+        )
+      let dateValues = dateRows :: Array { date_col :: SQLDate, time_col :: SQLTime }
+      map (_.date_col) dateValues `shouldEqual` [sqlDate]
+      map (_.time_col) dateValues `shouldEqual` [sqlTime]
+
+    it "use one ToSQLiteValue instance for typed, named, and positional Maybe Json values" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @NullableJsonTable)) conn # void
+      let obj = unsafeToForeign { source: "nested", depth: 2 }
+      runExecute conn {} (from nullableJsonTable # insert { metadata: Just (Json obj) }) # void
+      SQLite.execute
+        (SQLite.SQL "INSERT INTO nullable_json (metadata) VALUES (?1)")
+        [ SQLite.toSQLiteValue (Just (Just (Json obj)) :: Maybe (Maybe Json)) ]
+        conn # void
+      matching <- runQuery conn { metadata: Just (Json obj) }
+        (from nullableJsonTable # select @"metadata" # whereRaw @"metadata = $metadata" @(metadata :: Maybe Json) # orderBy @"id")
+      let values = map (_.metadata) (matching :: Array { metadata :: Maybe Json })
+      Array.length values `shouldEqual` 2
+      let serialized = values <#> \value -> case value of
+            Nothing -> ""
+            Just (Json json) -> unsafeStringify json
+      serialized `shouldEqual` [unsafeStringify obj, unsafeStringify obj]
+
+    it "uses the typed named conversion invariant inside transactions" \_ -> do
+      conn <- withTempDb
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @EventsTable)) conn # void
+      let dt = mkDateTime 2026 6 7 8 9 10
+      let obj = unsafeToForeign { transaction: true }
+      runExecute conn {} (from eventsTable # insert { title: "tx", metadata: Json obj, created_at: dt }) # void
+      txn <- SQLite.begin conn
+      changed <- runExecuteTx txn { created_at: dt }
+        (from eventsTable # set { title: "updated" } # where_ @"created_at = $created_at")
+      changed `shouldEqual` 1
+      rows <- runQueryTx txn { metadata: Json obj }
+        (from eventsTable # select @"title" # where_ @"metadata = $metadata")
+      map (_.title) (rows :: Array { title :: String }) `shouldEqual` ["updated"]
+      one <- SQLite.txQueryOne
+        (SQLite.SQL "SELECT title FROM events WHERE created_at = ?1")
+        [SQLite.toSQLiteValue dt]
+        txn
+      isNothing one `shouldEqual` false
+      SQLite.commit txn
+      SQLite.close conn # liftEffect
+
+    it "accepts signed 64-bit BigInt limits and rejects invalid driver values" \_ -> do
+      conn <- liftEffect $ SQLite.sqlite { url: ":memory:", intMode: "bigint" }
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @BigIntBindingsTable)) conn # void
+      let minInt64 = unsafePartial $ fromJust $ JS.BigInt.fromString "-9223372036854775808"
+      let maxInt64 = unsafePartial $ fromJust $ JS.BigInt.fromString "9223372036854775807"
+      let belowMin = unsafePartial $ fromJust $ JS.BigInt.fromString "-9223372036854775809"
+      let aboveMax = unsafePartial $ fromJust $ JS.BigInt.fromString "9223372036854775808"
+      SQLite.execute (SQLite.SQL "INSERT INTO bigint_bindings (value) VALUES (?1), (?2)")
+        [SQLite.toSQLiteValue minInt64, SQLite.toSQLiteValue maxInt64] conn # void
+      rows <- runQuery conn {} (from bigIntBindingsTable # select @"value" # orderBy @"id")
+      map (_.value) (rows :: Array { value :: BigInt }) `shouldEqual` [minInt64, maxInt64]
+      expectError $ SQLite.execute (SQLite.SQL "SELECT ?1") [SQLite.toSQLiteValue belowMin] conn
+      expectError $ SQLite.execute (SQLite.SQL "SELECT ?1") [SQLite.toSQLiteValue aboveMax] conn
+      expectError $ SQLite.execute (SQLite.SQL "SELECT ?1") [SQLite.toSQLiteValue Number.nan] conn
+      expectError $ SQLite.execute (SQLite.SQL "SELECT ?1") [SQLite.toSQLiteValue Number.infinity] conn
+      expectError $ SQLite.execute (SQLite.SQL "SELECT ?1") [SQLite.toSQLiteValue undefinedValue] conn
+      expectError $ SQLite.execute (SQLite.SQL "SELECT ?1") [SQLite.toSQLiteValue (unsafeToForeign { invalid: true })] conn
+      SQLite.close conn # liftEffect
+
+  describe "How to bind application values" do
+    it "bind Just through its inner ToSQLiteValue instance" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
       SQLite.execute
         (SQLite.SQL "INSERT INTO users (name, email, age) VALUES (?1, ?2, ?3)")
@@ -910,7 +1140,17 @@ spec = before setupConn do
       let ages = map (_.age) (rows :: Array { id :: Int, name :: String, email :: String, age :: Maybe Int })
       ages `shouldEqual` [Just 42]
 
-    it "Boolean round-trip via ToSQLiteValue uses 0/1" \conn -> do
+    it "Maybe Json: Just → JSON; Nothing → SQL NULL" \conn -> do
+      SQLite.executeSimple (SQLite.SQL (createTableDDL @NullableJsonTable)) conn # void
+      let profile = Json $ unsafeToForeign { name: "Ada", roles: [ "admin" ] }
+      runExecute conn {} (from nullableJsonTable # insert { metadata: Just profile }) # void
+      runExecute conn {} (from nullableJsonTable # insert { metadata: Nothing }) # void
+
+      rows <- runQuery conn {} (from nullableJsonTable # select @"metadata" # orderBy @"id")
+      let metadata = rows <#> \row -> renderJson <$> row.metadata
+      metadata `shouldEqual` [ Just (renderJson profile), Nothing ]
+
+    it "bind Boolean as SQLite integers and decode it as SQLiteBool" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @ConfigTable)) conn # void
       SQLite.execute (SQLite.SQL "INSERT INTO config (active) VALUES (?1)") [ SQLite.toSQLiteValue true ] conn # void
       SQLite.execute (SQLite.SQL "INSERT INTO config (active) VALUES (?1)") [ SQLite.toSQLiteValue false ] conn # void
@@ -949,7 +1189,7 @@ spec = before setupConn do
       r1.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 1)
       r2.lastInsertRowid `shouldEqual` Just (JS.BigInt.fromInt 2)
 
-  describe "Evil edge cases" do
+  describe "How parameter binding protects SQL and preserves values" do
     it "single quotes in string values don't corrupt SQL" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @UsersTable)) conn # void
       runExecute conn {} (from usersTable # insert { name: "O'Brien", email: "o@b.com" }) # void
@@ -1074,7 +1314,7 @@ spec = before setupConn do
       let lengths = map Array.length (results :: Array (Array { id :: Int, name :: String, email :: String, age :: Maybe Int }))
       lengths `shouldEqual` [1, 1]
 
-  describe "More evil edge cases" do
+  describe "Boundary-value behavior" do
     it "MAX_SAFE_INTEGER round-trips as Number" \conn -> do
       SQLite.executeSimple (SQLite.SQL "CREATE TABLE bigints (id INTEGER PRIMARY KEY, val INTEGER NOT NULL)") conn # void
       SQLite.execute (SQLite.SQL "INSERT INTO bigints (val) VALUES (?1)") [SQLite.toSQLiteValue 9007199254740991.0] conn # void
@@ -1305,7 +1545,7 @@ spec = before setupConn do
       let dts = map (_.created_at) (rows :: Array { created_at :: DateTime })
       dts `shouldEqual` [dt]
 
-    it "ForeignKey newtype round-trips without wrapper workaround" \conn -> do
+    it "define ToSQLiteValue once for newtypes used as foreign keys" \conn -> do
       SQLite.executeSimple (SQLite.SQL (createTableDDL @CodesTable)) conn # void
       SQLite.executeSimple (SQLite.SQL (createTableDDL @LinkedCodesTable)) conn # void
       runExecute conn {} (from (Proxy :: Proxy CodesTable) # insert { code: Code "alpha" }) # void

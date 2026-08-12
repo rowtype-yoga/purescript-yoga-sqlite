@@ -10,7 +10,7 @@ import Data.Nullable (Nullable, toNullable)
 import Data.Nullable as Nullable
 import Data.JSDate as JSDate
 import Effect (Effect)
-import Effect.Aff (Aff)
+import Effect.Aff (Aff, generalBracket)
 import Effect.Uncurried (EffectFn1, EffectFn2, EffectFn3, runEffectFn1, runEffectFn2, runEffectFn3)
 import Foreign (Foreign)
 import JS.BigInt (BigInt)
@@ -51,6 +51,9 @@ derive newtype instance Show SQL
 -- Type-safe SQL parameters
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+-- | The single extension point for values bound by both raw and typed queries.
+-- | Domain newtypes can derive this instance from a supported representation:
+-- | `derive newtype instance ToSQLiteValue UserId`.
 class ToSQLiteValue a where
   toSQLiteValue :: a -> SQLiteValue
 
@@ -287,6 +290,26 @@ commit = runEffectFn1 commitImpl >>> Promise.toAffE
 
 rollback :: Transaction -> Aff Unit
 rollback = runEffectFn1 rollbackImpl >>> Promise.toAffE
+
+-- | Run a write transaction. Failure or fiber cancellation rolls it back;
+-- | only a successfully completed handler commits.
+transaction :: forall a. (Transaction -> Aff a) -> Connection -> Aff a
+transaction = transactionWithMode Write
+
+-- | Run a transaction with an explicit libSQL mode.
+transactionWithMode
+  :: forall a
+   . TransactionMode
+  -> (Transaction -> Aff a)
+  -> Connection
+  -> Aff a
+transactionWithMode mode handler conn =
+  generalBracket (beginWithMode mode conn)
+    { killed: \_ -> rollback
+    , failed: \_ -> rollback
+    , completed: \_ -> commit
+    }
+    handler
 
 txQuery :: SQL -> Array SQLiteValue -> Transaction -> Aff QueryResult
 txQuery (SQL sql) args txn =

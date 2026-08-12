@@ -12,7 +12,6 @@ import Data.JSDate as JSDate
 import Data.Maybe (Maybe(..), fromMaybe, maybe)
 import Data.Time (Time(..), hour, minute, second)
 import Data.Newtype (class Newtype)
-import Data.Nullable (toNullable)
 import Data.UUID (UUID)
 import JS.BigInt (BigInt)
 import Unsafe.Coerce (unsafeCoerce)
@@ -34,7 +33,7 @@ import Data.Map as Map
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Type.Function (type (#))
 import Effect.Aff (Aff, throwError)
-import Foreign (Foreign, ForeignError(..), unsafeToForeign)
+import Foreign (Foreign, ForeignError(..))
 import Prim.Boolean (True, False)
 import Prim.Row (class Cons, class Lacks, class Union, class Nub) as Row
 import Prim.RowList as RL
@@ -268,6 +267,7 @@ instance SQLite.ToSQLiteValue SQLUUID where
 
 instance SQLite.ToSQLiteValue Json where
   toSQLiteValue (Json f) = unsafeCoerce (unsafeStringify f)
+
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 -- Nullability: inferred from Maybe
@@ -3025,28 +3025,6 @@ instance (IsSymbol name, ColumnNamesRL tail) => ColumnNamesRL (RL.Cons name typ 
 -- RecordValuesRL: extract record values in RowList order
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-class FieldToSQLiteValue :: Type -> Constraint
-class FieldToSQLiteValue a where
-  fieldToSQLiteValue :: a -> SQLite.SQLiteValue
-
-instance FieldToSQLiteValue a => FieldToSQLiteValue (Maybe a) where
-  fieldToSQLiteValue = toNullable >>> unsafeCoerce
-else instance FieldToSQLiteValue DateTime where
-  fieldToSQLiteValue dt = unsafeCoerce (SQLite.dateTimeToString (JSDate.fromDateTime dt))
-else instance FieldToSQLiteValue SQLDate where
-  fieldToSQLiteValue (SQLDate d) = unsafeCoerce (SCU.take 10 (SQLite.dateTimeToString (JSDate.fromDateTime (DateTime d bottom))))
-else instance FieldToSQLiteValue SQLTime where
-  fieldToSQLiteValue (SQLTime t) = unsafeCoerce (pad (fromEnum (hour t)) <> ":" <> pad (fromEnum (minute t)) <> ":" <> pad (fromEnum (second t)))
-    where
-    pad n = if n < 10 then "0" <> show n else show n
-else instance FieldToSQLiteValue Boolean where
-  fieldToSQLiteValue b = unsafeCoerce (if b then 1 else 0)
-else instance FieldToSQLiteValue SQLiteBool where
-  fieldToSQLiteValue (SQLiteBool b) = unsafeCoerce (if b then 1 else 0)
-else instance FieldToSQLiteValue Json where
-  fieldToSQLiteValue (Json f) = unsafeCoerce (unsafeStringify f)
-else instance FieldToSQLiteValue a where
-  fieldToSQLiteValue = unsafeCoerce
 
 class RecordValuesRL :: RL.RowList Type -> Row Type -> Constraint
 class RecordValuesRL rl row where
@@ -3058,12 +3036,12 @@ instance RecordValuesRL RL.Nil row where
 instance
   ( IsSymbol name
   , Row.Cons name typ rest row
-  , FieldToSQLiteValue typ
+  , SQLite.ToSQLiteValue typ
   , RecordValuesRL tail row
   ) =>
   RecordValuesRL (RL.Cons name typ tail) row where
   recordValuesRL _ rec =
-    [ fieldToSQLiteValue (Record.get (Proxy :: Proxy name) rec) ]
+    [ SQLite.toSQLiteValue (Record.get (Proxy :: Proxy name) rec) ]
       <> recordValuesRL (Proxy :: Proxy tail) rec
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -3773,7 +3751,7 @@ exceptAll (Q q1) (Q q2) = Q { sql: q1.sql <> " EXCEPT ALL " <> q2.sql, values: q
 
 class ParamsToArray :: RL.RowList Type -> Row Type -> Constraint
 class ParamsToArray rl row where
-  paramsToArray :: Proxy rl -> { | row } -> Array { name :: String, value :: Foreign }
+  paramsToArray :: Proxy rl -> { | row } -> Array { name :: String, value :: SQLite.SQLiteValue }
 
 instance ParamsToArray RL.Nil row where
   paramsToArray _ _ = []
@@ -3782,12 +3760,13 @@ instance
   ( IsSymbol name
   , Row.Cons name typ rest row
   , Row.Lacks name rest
+  , SQLite.ToSQLiteValue typ
   , ParamsToArray tail row
   ) =>
   ParamsToArray (RL.Cons name typ tail) row where
   paramsToArray _ rec =
     [ { name: reflectSymbol (Proxy :: Proxy name)
-      , value: unsafeToForeign (Record.get (Proxy :: Proxy name) rec)
+      , value: SQLite.toSQLiteValue (Record.get (Proxy :: Proxy name) rec)
       }
     ]
       <> paramsToArray (Proxy :: Proxy tail) rec
@@ -3797,7 +3776,7 @@ namedParamRegex = case Regex.regex "\\$[a-zA-Z_][a-zA-Z0-9_]*" Regex.global of
   Right r -> r
   Left _ -> unsafeCoerce unit
 
-replaceNamedParams :: Int -> Array { name :: String, value :: Foreign } -> String -> { sql :: String, values :: Array SQLite.SQLiteValue }
+replaceNamedParams :: Int -> Array { name :: String, value :: SQLite.SQLiteValue } -> String -> { sql :: String, values :: Array SQLite.SQLiteValue }
 replaceNamedParams offset entries sql = do
   let indexed = entries # mapWithIndex \i e -> { idx: offset + i + 1, name: e.name, value: e.value }
   let replacements = indexed # foldl (\m e -> Map.insert ("$" <> e.name) ("?" <> show e.idx) m) Map.empty
@@ -3808,7 +3787,7 @@ replaceNamedParams offset entries sql = do
           Just v -> v
       )
       sql
-  { sql: sql', values: map (\e -> unsafeCoerce e.value) indexed }
+  { sql: sql', values: map _.value indexed }
 
 runQuery
   :: forall tables result params paramsRL stage
